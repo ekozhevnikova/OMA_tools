@@ -1016,7 +1016,7 @@ class VIMBHistoryUpdater:
         }
 
         # Добавляем столбец с названием месяца
-        full_df['Номер месяца'] = pd.to_datetime(full_df['Период с ...']).dt.month
+        full_df['Номер месяца'] = pd.to_datetime(full_df['Период с..'], format = '%d.%m.%Y', errors = 'coerce').dt.month
         full_df['Месяц'] = full_df['Номер месяца'].map(months_ru)
 
 

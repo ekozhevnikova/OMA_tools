@@ -262,11 +262,15 @@ class TVShareCalculator:
         return result_df
     
 
-    def calculate_weighted_share(self, auedience) -> pd.DataFrame:
+    def calculate_weighted_share(self, auedience, reverse: bool = False) -> pd.DataFrame:
         """
             Функция для расчета взвешенной доли для какого-то конкретного дня.
             Args:
-                auedience: pd.DataFrame: ДатаФрейм с весами слотов, посчитанными через TotalTVAuedience для конкретного дня.
+                auedience: pd.DataFrame: 
+                    ДатаФрейм с весами слотов, посчитанными через TotalTVAuedience для конкретного дня.
+                reverse: bool
+                    Переменная типа bool. По умолчанию False. Если True, то необходимо делать обратный пересчет на "нормальную"
+                    не взвешенную долю.
             Returns:
                 res: pd.DataFrame: Датафрейм с новой рассчитанной долей для какого-то конкретного дня
                 share_sum: суммарная доля для какого-то конкретного дня
@@ -371,7 +375,14 @@ class TVShareCalculator:
                     
             if len(coeffs) != 0:
                 coefficient = np.sum(coeffs)
-                df.at[i, 'Share_weighted'] = share * coefficient
+                
+                # если нужно посчитать "чистую" долю
+                if reverse:
+                    df.at[i, 'Share_weighted'] = share / coefficient
+
+                # если нужно посчитать "взвешенную" долю
+                else:
+                    df.at[i, 'Share_weighted'] = share * coefficient
 
         res = df[
             [
@@ -412,6 +423,7 @@ class TVShareCalculator:
         res['Share_weighted'] = res['Share_weighted'].astype(float)
         # Расчёт суммарной доли по дню
         share_sum = np.sum(list(res['Share_weighted']))
+
         return res, share_sum
 
 

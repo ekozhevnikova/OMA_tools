@@ -662,7 +662,8 @@ class MediascopeParser(BaseParser):
             statistics = ['Share'], 
             sortings = {'tvCompanyName': 'ASC', 'researchDate': 'ASC', 'programStartTime': 'ASC'},
             options = {
-                       "kitId": 1 #TV Index Russia all
+                       "kitId": 1, #TV Index Russia all,
+                       "issueType": "PROGRAM"
                    }
             ) -> pd.DataFrame:
             """
@@ -1195,7 +1196,8 @@ class TVPreprocessing(BaseParser):
                         weighted_auedience: pd.DataFrame, 
                         start_time_col: str = 'Время выхода', 
                         end_time_col: str = 'Время окончания',
-                        date_col: str = 'Дата'
+                        date_col: str = 'Дата',
+                        reverse: bool = False
                                 ) -> Tuple[pd.DataFrame, Dict]:
         """
             Функция для расчета взвешенной доли. 
@@ -1212,6 +1214,9 @@ class TVPreprocessing(BaseParser):
                 Название столбца с временем окончания программы. По умолчанию "Время окончания".
             date_col: str
                 Название столбца с датой
+            reverse: bool
+                Переменная типа bool. По умолчанию False. Если True, то необходимо делать обратный пересчет на "нормальную"
+                не взвешенную долю.
 
             Returns:
             ----------
@@ -1246,7 +1251,7 @@ class TVPreprocessing(BaseParser):
                 auedience = weighted_auedience[weighted_auedience[date_col] == date].reset_index(drop = True)
 
                 plmrs_new = self._palomars_round_time(df)
-                res, share = TVShareCalculator(self.channel, plmrs_new).calculate_weighted_share(auedience)
+                res, share = TVShareCalculator(self.channel, plmrs_new).calculate_weighted_share(auedience, reverse)
                 
                 results_list.append(res)
                 shares[date] = share
@@ -1291,6 +1296,10 @@ class TVPreprocessing(BaseParser):
                 'Share', 'Share_weighted', 'Жанр', 'День недели'
                 ]
         ]
+
+        # Переименовываем столбец с долей только в том случае, если нужно посчитать "чистую" долю
+        if reverse:
+            general_result.rename(columns = {'Share_weighted': 'Share_original'}, inplace = True)
 
         return general_result, shares
         
@@ -3040,7 +3049,7 @@ class ProgramMatcher(BaseParser):
         sorted_webs = webs_converted.sort_values('Дата').reset_index(drop = True)
         
         res = []
-        for date in dates_unique:
+        for date in sorted_webs['Дата'].unique():
             date_dt = pd.to_datetime(date)
             t = sorted_webs[sorted_webs['Дата'] == date_dt]
             t['sort_key'] = t['Время выхода'].apply(BaseParser.get_sort_key)

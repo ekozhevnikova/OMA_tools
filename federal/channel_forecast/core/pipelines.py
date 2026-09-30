@@ -11,6 +11,7 @@ warnings.filterwarnings('ignore')
 from OMA_tools.io_data.colors import *
 from OMA_tools.federal.channel_forecast.grid_preprocessing import *
 from OMA_tools.federal.channel_forecast.core.simple_models import *
+from OMA_tools.federal.channel_forecast.support import Assistant
 
 
 
@@ -422,6 +423,9 @@ class ChannelForecasterMaster:
             cities: dict,
             holidays_file: str,
             share_fact_df: str,
+            total_tv_auedience: pd.DataFrame,
+            weighted_share_file: str
+
         ):
         """
             Атрибуты класса.
@@ -450,8 +454,10 @@ class ChannelForecasterMaster:
                 Словарь с городами разных стран
             holidays_file: str
                 Путь к файлу с праздниками и рабочими субботами для РФ
-            share_fact_file: str
-                Путь к файлу с фактическими значениями долей в разбивке по дням
+            total_tv_auedience: pd.DataFrame
+                Таблица с фактическими значениями долей в разбивке по дням
+            audience_file: str
+                Путь к файлу с фактическими значениями весов слотов
 
         """
         self.channel = channel
@@ -465,6 +471,8 @@ class ChannelForecasterMaster:
         self.cities = cities
         self.holidays_file = holidays_file
         self.share_fact_df = share_fact_df
+        self.total_tv_auedience = total_tv_auedience
+        self.weighted_share_file = weighted_share_file
 
         self.MONTHS = {
             1: 'январь', 2: 'февраль', 3: 'март',
@@ -509,6 +517,7 @@ class ChannelForecasterMaster:
 
         # ПОДГОТОВКА ДАННЫХ Palomars
         fact_part_of_month = pd.DataFrame()
+        fact_df_by_programs = pd.DataFrame()
         train = pd.DataFrame()
         vimb_init = pd.DataFrame()
 
@@ -523,6 +532,14 @@ class ChannelForecasterMaster:
             # Отделяем тренировочную выборку, которую будем использовать для прогнозирования
             train = historical_data_copy[historical_data_copy['Дата'] <= self.params['last_fact_date']].reset_index(drop = True)
             train.rename(columns = {'Share_weighted': 'Share', 'Название программы': 'program_name'}, inplace = True)
+
+            # Формируем датафрейм с фактическими данными в разбивке по программам
+            fact_df_by_programs = train[['Дата', 'Название программы init', 'Время выхода', 'Время окончания', 'Share']]
+            fact_df_by_programs.rename(columns = {'Название программы init': 'Название программы'}, inplace = True)
+            fact_df_by_programs = fact_df_by_programs[
+                                            (fact_df_by_programs['Дата'] >= self.params['start_month']) & \
+                                            (fact_df_by_programs['Дата'] <= self.params['last_fact_date'])
+                                            ].reset_index(drop = True)
 
             # Выделяем даты в VIMB, которые будем прогнозировать
             mask_part_month = (vimb_grid_copy['Дата'] > self.params['last_fact_date']) & (vimb_grid_copy['Дата'] <= self.params['stop_month'])
@@ -542,6 +559,7 @@ class ChannelForecasterMaster:
         self.input_params = {
             'train_df': train,
             'fact_df': fact_part_of_month,
+            'fact_by_programs': fact_df_by_programs,
             'vimb_df': vimb_init
         }
         
@@ -569,6 +587,16 @@ class ChannelForecasterMaster:
         return forecast_df
     
 
+    @staticmethod
+    def time_to_minutes(time_str):
+        """
+            Преобразует строку времени HH:MM:SS в минуты
+        """
+        h, m, s = map(int, time_str.split(':'))
+        return h * 60 + m + (s / 60)  # секунды переводим в доли минут
+
+
+
     def pipeline_predictor(self):
         """
             Полный пайплайн для прогнозирования.
@@ -583,19 +611,112 @@ class ChannelForecasterMaster:
         # 2. Построение прогноза
         forecast_df = self.fit_predict()
 
-        data_forecast = forecast_df.groupby('Дата', as_index = False)['Share'].sum()
-        data_forecast.rename(columns = {'Share': f'{self.channel}'}, inplace = True)
+        full_forecast = pd.DataFrame()
 
-        forecast_df = pd.DataFrame()
         # Если есть накопленный факт, то мы соединяем между собой две таблицы
-        if len(self.input_params['fact_df']) != 0:
-            df_fact = self.input_params['fact_df'][['Дата', f'{self.channel}']]
-            #df_fact.rename(columns = {f'{self.channel}': 'Share'}, inplace = True)
-            forecast_df = pd.concat([df_fact, data_forecast]).reset_index(drop = True)
+        if len(self.input_params['fact_by_programs']) != 0:
+            df_fact = self.input_params['fact_by_programs']
+
+            # Для фактической части делаем пересчет в "чистую долю" из взвешенной
+            df_fact['Канал'] = self.channel
+            df_fact['Продолжительность'] = 0.0
+            df_fact['Жанр'] = ''
+            df_fact['День недели'] = ''
+
+            res = []
+            for date in df_fact['Дата'].unique():
+                t = df_fact[df_fact['Дата'] == date]
+
+                t['sort_key'] = t['Время выхода'].apply(BaseParser.get_sort_key)
+
+                final = t.sort_values('sort_key').reset_index(drop = True)
+
+                final = final.drop('sort_key', axis = 1)
+                res.append(final)
+            
+            df_fact_result = pd.concat(res).reset_index(drop = True)
+
+            # Пересчет взвешенной доли в "чистую"
+            parser = TVPreprocessing(self.channel, self.weighted_share_file, df_fact_result)
+
+            # Расчет "чистой" доли
+            new_df_fact, shares = parser.process_daily_weighted_shares(self.total_tv_auedience, reverse = True)
+
+            new_df_fact_cleaned = new_df_fact.drop(['Продолжительность', 'Жанр', 'День недели'], axis = 1)
+
+            forecast_df.drop(['program_type'], axis = 1, inplace = True)
+            forecast_df['Share_original'] = 0.0
+            forecast_df['Канал'] = self.channel
+
+            full_forecast = pd.concat([new_df_fact_cleaned, forecast_df]).reset_index(drop = True)
 
         else:
-            forecast_df = data_forecast
+            full_forecast = forecast_df
+            full_forecast['Канал'] = self.channel
+            full_forecast['Share_original'] = 0.0
+        
 
+        # 3. Расчет веса каждой программы в каждом дне
+        df = Assistant().calculate_program_duration(full_forecast)
+        df.drop(['Время выхода_dt', 'Время окончания_dt'], axis = 1, errors = 'ignore', inplace = True)
+        df = df[['Канал', 'Дата', 'Название программы', 'Время выхода', 'Время окончания', 'Продолжительность', 'Share', 'Share_original']]
+
+        # Применяем функцию к столбцу 'Продолжительность'
+        df['Продолжительность, мин'] = df['Продолжительность'].apply(ChannelForecasterMaster.time_to_minutes)
+
+        df = df[['Канал', 'Дата', 'Название программы', 'Время выхода', 'Время окончания', 'Продолжительность, мин', 'Share', 'Share_original']]
+
+        df['Вес программы в дне'] = None
+
+        for date in df['Дата'].unique():
+            mask = df['Дата'] == date
+            sum_dur = df.loc[mask, 'Продолжительность, мин'].sum()  # Более эффективно
+            df.loc[mask, 'Вес программы в дне'] = df.loc[mask, 'Продолжительность, мин'] / sum_dur
+
+        final = df[
+            [
+                'Канал', 'Дата', 'Название программы', 'Время выхода', 
+                'Время окончания', 'Продолжительность, мин', 
+                'Вес программы в дне', 'Share', 'Share_original'
+                ]
+        ]
+        
         print(Color.BOLD + Color.CRIMSON + '⭐ Прогноз завершён!' + Color.END + '\n')
 
-        return forecast_df
+        return final
+    
+
+
+    #def pipeline_predictor(self):
+    #    """
+    #        Полный пайплайн для прогнозирования.
+    #    """
+    #    print(Color.BOLD + Color.ROYAL_BLUE + f'=== 🧘 Начинаю построение прогноза для канала {self.channel} ===' + Color.END)
+    #    print(f'Количество дней в факте {self.n_days_in_fact}. Буду строить прогноз, опираясь на данные за последние {self.n_weeks_ago} недели.')
+    #    print(Color.INDIGO + '🧘 Генерирую входные параметры для прогнозирования и строю прогноз Пожалуйста, подождите ...')
+#
+    #    # 1. Генерация входных параметров
+    #    self.input_params = self.make_params_per_forecast()
+    #    
+    #    # 2. Построение прогноза
+    #    forecast_df = self.fit_predict()
+#
+    #    data_forecast = forecast_df.groupby('Дата', as_index = False)['Share'].sum()
+    #    data_forecast.rename(columns = {'Share': f'{self.channel}'}, inplace = True)
+#
+    #    forecast_df = pd.DataFrame()
+#
+    #    # Если есть накопленный факт, то мы соединяем между собой две таблицы
+    #    if len(self.input_params['fact_df']) != 0:
+    #        df_fact = self.input_params['fact_df'][['Дата', f'{self.channel}']]        
+#
+    #        forecast_df = pd.concat([df_fact, data_forecast]).reset_index(drop = True)
+#
+    #        #print(forecast_df.to_string())
+#
+    #    else:
+    #        forecast_df = data_forecast
+#
+    #    print(Color.BOLD + Color.CRIMSON + '⭐ Прогноз завершён!' + Color.END + '\n')
+#
+    #    return forecast_df
