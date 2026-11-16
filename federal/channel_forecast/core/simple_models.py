@@ -2274,10 +2274,15 @@ class RuleBasedForecaster:
         else:
             start_date_forecast = start_of_month
 
-        #print(f"Начало месяца:                     {start_of_month}")
+        ############### НОВЫЙ КУСОК ###############
+        # Последние три месяца для выходного файла
+        three_months_ago = f'{year}-{(month_num - 3):02d}-01'
+
+        ############### КОНЕЦ НОВОГО КУСКА ###############
+
         print(f"Дата начала построения прогноза:   {start_date_forecast}")
         print(f"Последняя прогнозируемая дата:     {finish_of_month}")
-        #print(f"Последняя фактическая дата:        {last_fact_date}")
+        print(f"Три месяца назад:                  {three_months_ago}")
         
         params = {
             'BCA': BCA,
@@ -2285,7 +2290,8 @@ class RuleBasedForecaster:
             'start_month': start_of_month,
             'start_date_forecast': start_date_forecast,
             'stop_month': finish_of_month,
-            'last_fact_date': last_fact_date
+            'last_fact_date': last_fact_date,
+            'three_months_ago': three_months_ago            # новый параметр
         }
         return params
     
@@ -3756,7 +3762,7 @@ class RuleBasedForecaster:
                                                         programs_dict, 
                                                         key,  # volume_flag
                                                         n_weeks_ago,
-                                                        debug=debug
+                                                        debug = debug
                                                     )
 
         results = []
@@ -3765,7 +3771,7 @@ class RuleBasedForecaster:
                 results.append(forecast)
 
         # Итоговая таблица с прогнозом
-        data_full = pd.concat(results).reset_index(drop=True)
+        data_full = pd.concat(results).reset_index(drop = True)
 
         columns = ['Дата', 'Название программы', 'Время выхода', 'Время окончания', 'Share', 'program_type']
         data_full = data_full[columns]

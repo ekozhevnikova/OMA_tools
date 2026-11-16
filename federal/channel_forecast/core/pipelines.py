@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 
 from OMA_tools.io_data.colors import *
 from OMA_tools.federal.channel_forecast.grid_preprocessing import *
-from OMA_tools.federal.channel_forecast.core.simple_models import *
+from OMA_tools.federal.channel_forecast.core.simple_models import DataPreparator, RuleBasedForecaster
 from OMA_tools.federal.channel_forecast.support import Assistant
 
 
@@ -520,6 +520,7 @@ class ChannelForecasterMaster:
         fact_df_by_programs = pd.DataFrame()
         train = pd.DataFrame()
         vimb_init = pd.DataFrame()
+        three_months_ago_df = pd.DataFrame()
 
         if self.params['last_fact_date']:
             print(Color.BOLD + Color.GREEN + '🤩 Есть накопленный факт!' + Color.END)
@@ -531,36 +532,63 @@ class ChannelForecasterMaster:
         
             # Отделяем тренировочную выборку, которую будем использовать для прогнозирования
             train = historical_data_copy[historical_data_copy['Дата'] <= self.params['last_fact_date']].reset_index(drop = True)
+
+            train['Название программы копия'] = train['Название программы'].copy()
             train.rename(columns = {'Share_weighted': 'Share', 'Название программы': 'program_name'}, inplace = True)
 
             # Формируем датафрейм с фактическими данными в разбивке по программам
-            fact_df_by_programs = train[['Дата', 'Название программы init', 'Время выхода', 'Время окончания', 'Share']]
-            fact_df_by_programs.rename(columns = {'Название программы init': 'Название программы'}, inplace = True)
-            fact_df_by_programs = fact_df_by_programs[
-                                            (fact_df_by_programs['Дата'] >= self.params['start_month']) & \
-                                            (fact_df_by_programs['Дата'] <= self.params['last_fact_date'])
+            fact_df_by_programs_init = train[['Дата', 'Название программы копия', 'Время выхода', 'Время окончания', 'Share']]
+            fact_df_by_programs_init.rename(columns = {'Название программы копия': 'Название программы'}, inplace = True)
+            fact_df_by_programs_init = fact_df_by_programs_init[['Дата', 'Название программы', 'Время выхода', 'Время окончания', 'Share']]
+        
+            fact_df_by_programs = fact_df_by_programs_init[
+                                            (fact_df_by_programs_init['Дата'] >= self.params['start_month']) & \
+                                            (fact_df_by_programs_init['Дата'] <= self.params['last_fact_date'])
                                             ].reset_index(drop = True)
 
             # Выделяем даты в VIMB, которые будем прогнозировать
             mask_part_month = (vimb_grid_copy['Дата'] > self.params['last_fact_date']) & (vimb_grid_copy['Дата'] <= self.params['stop_month'])
             vimb_init = vimb_grid_copy[mask_part_month].reset_index(drop = True)
+
+            ####################################### НОВЫЙ КУСОК #######################################
+            # Выделяем фактические данные за последние 3 месяца
+            three_months_ago_df = fact_df_by_programs_init[
+                                            (fact_df_by_programs_init['Дата'] >= self.params['three_months_ago']) & \
+                                            (fact_df_by_programs_init['Дата'] <= self.params['last_fact_date'])
+                                            ].reset_index(drop = True)
         
         else:
             print(Color.GREEN + Color.DARK_GRAY + '🙁 Накопленного факта нет. Буду строить прогноз на весь месяц целиком.' + Color.END)
             # Отделяем тренировочную выборку, которую будем использовать для прогнозирования
             train = historical_data_copy[historical_data_copy['Дата'] < self.params['start_month']].reset_index(drop = True)
+
+            train['Название программы копия'] = train['Название программы'].copy()
             train.rename(columns = {'Share_weighted': 'Share', 'Название программы': 'program_name'}, inplace = True)
+
+
+            #train.rename(columns = {'Share_weighted': 'Share', 'Название программы': 'program_name'}, inplace = True)
 
             # Выделяем даты в VIMB, которые будем прогнозировать
             mask_full_month = (vimb_grid_copy['Дата'] >= self.params['start_date_forecast']) & (vimb_grid_copy['Дата'] <= self.params['stop_month'])
             vimb_init = vimb_grid_copy[mask_full_month].reset_index(drop = True)
+
+            ####################################### НОВЫЙ КУСОК #######################################
+            fact_df_by_programs = train[['Дата', 'Название программы копия', 'Время выхода', 'Время окончания', 'Share']]
+            fact_df_by_programs.rename(columns = {'Название программы копия': 'Название программы'}, inplace = True)
+            fact_df_by_programs = fact_df_by_programs[['Дата', 'Название программы', 'Время выхода', 'Время окончания', 'Share']]
+            # Выделяем фактические данные за последние 3 месяца
+            three_months_ago_df = fact_df_by_programs[
+                                            (fact_df_by_programs['Дата'] >= self.params['three_months_ago']) & \
+                                            (fact_df_by_programs['Дата'] < self.params['start_month'])
+                                            ].reset_index(drop = True)
         
 
         self.input_params = {
             'train_df': train,
             'fact_df': fact_part_of_month,
             'fact_by_programs': fact_df_by_programs,
-            'vimb_df': vimb_init
+            'vimb_df': vimb_init,
+            '3 months ago': three_months_ago_df         # новый параметр. Данные за последние 3 месяца
         }
         
         return self.input_params
@@ -614,46 +642,83 @@ class ChannelForecasterMaster:
         full_forecast = pd.DataFrame()
 
         # Если есть накопленный факт, то мы соединяем между собой две таблицы
-        if len(self.input_params['fact_by_programs']) != 0:
-            df_fact = self.input_params['fact_by_programs']
 
-            # Для фактической части делаем пересчет в "чистую долю" из взвешенной
-            df_fact['Канал'] = self.channel
-            df_fact['Продолжительность'] = 0.0
-            df_fact['Жанр'] = ''
-            df_fact['День недели'] = ''
+        if len(self.input_params['3 months ago']) == 0:
+            raise ValueError(
+                Color.BOLD + Color.RED + \
+                f"Для '{self.channel}' не удалось сформировать историю за последние 3 месяца. Пожалуйста, проверьте данные!" + \
+                Color.END
+            )
+        
 
-            res = []
-            for date in df_fact['Дата'].unique():
-                t = df_fact[df_fact['Дата'] == date]
+        df_fact = self.input_params['3 months ago']
 
-                t['sort_key'] = t['Время выхода'].apply(BaseParser.get_sort_key)
+        # Для фактической части делаем пересчет в "чистую долю" из взвешенной
+        df_fact['Канал'] = self.channel
+        df_fact['Продолжительность'] = 0.0
+        df_fact['Жанр'] = ''
+        df_fact['День недели'] = ''
 
-                final = t.sort_values('sort_key').reset_index(drop = True)
+        res = []
+        for date in df_fact['Дата'].unique():
+            t = df_fact[df_fact['Дата'] == date]
+            t['sort_key'] = t['Время выхода'].apply(BaseParser.get_sort_key)
+            final = t.sort_values('sort_key').reset_index(drop = True)
+            final = final.drop('sort_key', axis = 1)
+            res.append(final)
+        df_fact_result = pd.concat(res).reset_index(drop = True)
 
-                final = final.drop('sort_key', axis = 1)
-                res.append(final)
-            
-            df_fact_result = pd.concat(res).reset_index(drop = True)
+        # Пересчет взвешенной доли в "чистую"
+        parser = TVPreprocessing(self.channel, self.weighted_share_file, df_fact_result)
 
-            # Пересчет взвешенной доли в "чистую"
-            parser = TVPreprocessing(self.channel, self.weighted_share_file, df_fact_result)
+        # Расчет "чистой" доли
+        new_df_fact, shares = parser.process_daily_weighted_shares(self.total_tv_auedience, reverse = True)
 
-            # Расчет "чистой" доли
-            new_df_fact, shares = parser.process_daily_weighted_shares(self.total_tv_auedience, reverse = True)
+        new_df_fact_cleaned = new_df_fact.drop(['Продолжительность', 'Жанр', 'День недели'], axis = 1)
 
-            new_df_fact_cleaned = new_df_fact.drop(['Продолжительность', 'Жанр', 'День недели'], axis = 1)
+        forecast_df.drop(['program_type'], axis = 1, inplace = True)
+        forecast_df['Share_original'] = 0.0
+        forecast_df['Канал'] = self.channel
 
-            forecast_df.drop(['program_type'], axis = 1, inplace = True)
-            forecast_df['Share_original'] = 0.0
-            forecast_df['Канал'] = self.channel
+        full_forecast = pd.concat([new_df_fact_cleaned, forecast_df]).reset_index(drop = True)
 
-            full_forecast = pd.concat([new_df_fact_cleaned, forecast_df]).reset_index(drop = True)
-
-        else:
-            full_forecast = forecast_df
-            full_forecast['Канал'] = self.channel
-            full_forecast['Share_original'] = 0.0
+        
+    #    if len(self.input_params['fact_by_programs']) != 0:
+    #        df_fact = self.input_params['fact_by_programs']
+#
+    #        # Для фактической части делаем пересчет в "чистую долю" из взвешенной
+    #        df_fact['Канал'] = self.channel
+    #        df_fact['Продолжительность'] = 0.0
+    #        df_fact['Жанр'] = ''
+    #        df_fact['День недели'] = ''
+#
+    #        res = []
+    #        for date in df_fact['Дата'].unique():
+    #            t = df_fact[df_fact['Дата'] == date]
+    #            t['sort_key'] = t['Время выхода'].apply(BaseParser.get_sort_key)
+    #            final = t.sort_values('sort_key').reset_index(drop = True)
+    #            final = final.drop('sort_key', axis = 1)
+    #            res.append(final)
+    #        df_fact_result = pd.concat(res).reset_index(drop = True)
+#
+    #        # Пересчет взвешенной доли в "чистую"
+    #        parser = TVPreprocessing(self.channel, self.weighted_share_file, df_fact_result)
+#
+    #        # Расчет "чистой" доли
+    #        new_df_fact, shares = parser.process_daily_weighted_shares(self.total_tv_auedience, reverse = True)
+#
+    #        new_df_fact_cleaned = new_df_fact.drop(['Продолжительность', 'Жанр', 'День недели'], axis = 1)
+#
+    #        forecast_df.drop(['program_type'], axis = 1, inplace = True)
+    #        forecast_df['Share_original'] = 0.0
+    #        forecast_df['Канал'] = self.channel
+#
+#            full_forecast = pd.concat([new_df_fact_cleaned, forecast_df]).reset_index(drop = True)
+#
+#        else:
+#            full_forecast = forecast_df
+#            full_forecast['Канал'] = self.channel
+#            full_forecast['Share_original'] = 0.0
         
 
         # 3. Расчет веса каждой программы в каждом дне

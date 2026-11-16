@@ -18,83 +18,46 @@ class Constants:
         
         
     @property
-    def company_name_list(self):
+    def company_name_dict(self):
         """
             Список Каналов. Каждое значение из данного списка соответствует значению из спика basedemo_filter_list (список с БЦА)
         """
-        return ['tvNetId IN (1, 2, 4, 60, 259, 257, 206, 260, 12, 258)', #Первый,Россия 1, НТВ, РЕН ТВ, Пятый канал, Домашний, ТВ-3, Россия 24, ТВ Центр, Звезда
-                         'tvNetId IN (1)', #Первый
-                         'tvNetId IN (11)', #СТС
-                         'tvNetId IN (83, 204)', #ТНТ, Пятница
-                         'tvNetId IN (83, 204)', #ТНТ, Пятница
-                         'tvNetId IN (255)', #ЧЕ
-                         'tvNetId IN (206)', #ТВ-3
-                         'tvNetId IN (40)', #Карусель
-                         'tvNetId IN (11)', #СТС
-                         'tvNetId IN (205)', #Ю
-                         'tvNetId IN (257)' #Домашний
-                        ]
+        companies = [
+            #Первый,Россия 1, НТВ, РЕН ТВ, Пятый канал, Домашний, ТВ-3, Россия 24, ТВ Центр, Звезда, Локальное ТВ
+            'tvNetId IN (1, 2, 4, 60, 259, 257, 206, 260, 12, 258, 300)',
+            'tvNetId IN (1)',       # Первый
+            'tvNetId IN (11)',      # СТС
+            'tvNetId IN (83, 204, 300)', # ТНТ, Пятница
+            'tvNetId IN (83, 204)', # ТНТ, Пятница
+            'tvNetId IN (255)',     # ЧЕ
+            'tvNetId IN (206)',     # ТВ-3
+            'tvNetId IN (40)',      # Карусель
+            'tvNetId IN (11)',      # СТС
+            'tvNetId IN (205)',     # Ю
+            'tvNetId IN (257)'      # Домашний
+        ]
+        return dict(zip(self.bca_list_names, companies))
     
     
     @property
-    def company_filter_list_local_channels(self):
-        """
-            Телеканал 78 (Санкт-Петербург): ID(7109), Санкт-Петербург (Санкт-Петербург) ID(4588)
-        """
-        return ['tvCompanyId = 7109', 'tvCompanyId = 4588'] 
-    
-    
-    @property
-    def company_gtrk(self):
-        """
-            Каналы ГТРК
-        """
-        return [
-                'tvCompanyId = 4758', 'tvCompanyId = 4701', 'tvCompanyId = 4609', 'tvCompanyId = 4628', 
-                'tvCompanyId = 4649', 'tvCompanyId = 4746', 'tvCompanyId = 4711', 'tvCompanyId = 4769', 
-                'tvCompanyId = 4731', 'tvCompanyId = 4692', 'tvCompanyId = 4599', 'tvCompanyId = 4675', 
-                'tvCompanyId = 4724', 'tvCompanyId = 4665', 'tvCompanyId = 4634', 'tvCompanyId = 4615', 
-                'tvCompanyId = 4582', 'tvCompanyId = 4639', 'tvCompanyId = 4754', 'tvCompanyId = 4591', 
-                'tvCompanyId = 4785', 'tvCompanyId = 4681', 'tvCompanyId = 4718', 'tvCompanyId = 4748', 
-                'tvCompanyId = 4661', 'tvCompanyId = 4622'
-                    ]
-
-    
-    @property
-    def regions_gtrk(self):
-        """
-            Регионы ГТРК
-        """
-        return [
-                {40: 'БАРНАУЛ   ВСЕ 18+'}, {18: 'ВЛАДИВОСТОК   ВСЕ 18+'}, {5: 'ВОЛГОГРАД   ВСЕ 18+'},
-                {8: 'ВОРОНЕЖ   ВСЕ 18+'}, {12: 'ЕКАТЕРИНБУРГ   ВСЕ 18+'}, {25: 'ИРКУТСК   ВСЕ 18+'},
-                {19: 'КАЗАНЬ   ВСЕ 18+'}, {45: 'КЕМЕРОВО   ВСЕ 18+'}, {23: 'КРАСНОДАР   ВСЕ 18+'},
-                {17: 'КРАСНОЯРСК   ВСЕ 18+'}, {4: 'НИЖНИЙ НОВГОРОД   ВСЕ 18+'}, {15: 'НОВОСИБИРСК   ВСЕ 18+'},
-                {21: 'ОМСК   ВСЕ 18+'}, {14: 'ПЕРМЬ   ВСЕ 18+'}, {9: 'РОСТОВ-НА-ДОНУ   ВСЕ 18+'},
-                {6: 'САМАРА   ВСЕ 18+'}, {2: 'САНКТ-ПЕТЕРБУРГ   ВСЕ 18+'}, {10: 'САРАТОВ   ВСЕ 18+'},
-                {39: 'СТАВРОПОЛЬ   ВСЕ 18+'}, {3: 'ТВЕРЬ   ВСЕ 18+'}, {55: 'ТОМСК   ВСЕ 18+'},
-                {16: 'ТЮМЕНЬ   ВСЕ 18+'}, {20: 'УФА   ВСЕ 18+'}, {26: 'ХАБАРОВСК   ВСЕ 18+'},
-                {13: 'ЧЕЛЯБИНСК  ВСЕ 18+'}, {7: 'ЯРОСЛАВЛЬ   ВСЕ 18+'}
-                ]
-    
-    
-    @property
-    def basedemo_filter_list(self):
+    def basedemo_filter_dict(self):
         """
             Список названий БЦА
         """
-        return ['age >= 18', #Первый,Россия 1, НТВ, РЕН ТВ, Пятый канал, Домашний, ТВ-3, Россия 24, ТВ Центр, Звезда
-                'age >= 14 AND age <= 59', #Первый
-                'age >= 10 AND age <= 45', #СТС
-                'age >= 14 AND age <= 44', #ТНТ, Пятница
-                'age >= 14 AND age <= 54', #ТНТ, Пятница
-                'age >= 25 AND age <= 49', #ЧЕ
-                'age >= 25 AND age <= 54', #ТВ-3
-                'age >= 4 AND age <= 45', #Карусель
-                'age >= 6 AND age <= 54', #СТС
-                'age >= 14 AND age <= 44 AND sex = 2', #Ю
-                'age >= 25 AND age <= 59 AND sex = 2' #Домашний
-               ]
+        basedemos = [
+            'age >= 18', # Первый,Россия 1, НТВ, РЕН ТВ, Пятый канал, Домашний, ТВ-3, Россия 24, ТВ Центр, Звезда
+            'age >= 14 AND age <= 59',              # Первый
+            'age >= 10 AND age <= 45',              # СТС
+            'age >= 14 AND age <= 44',              # ТНТ, Пятница
+            'age >= 14 AND age <= 54',              # ТНТ, Пятница
+            'age >= 25 AND age <= 49',              # ЧЕ
+            'age >= 25 AND age <= 54',              # ТВ-3
+            'age >= 4 AND age <= 45',               # Карусель
+            'age >= 6 AND age <= 54',               # СТС
+            'age >= 14 AND age <= 44 AND sex = 2',  # Ю
+            'age >= 25 AND age <= 59 AND sex = 2'   # Домашний
+        ]
+        return dict(zip(self.bca_list_names, basedemos))
     
     
     @property

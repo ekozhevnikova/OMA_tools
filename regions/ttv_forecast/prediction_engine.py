@@ -1,20 +1,11 @@
 import pandas as pd
-import numpy as np
-import xlsxwriter
-import copy
-import threading
-from threading import Lock
 import multiprocessing as mp
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import reduce
 
 from OMA_tools.io_data.operations import File, Table, Dict_Operations
-from OMA_tools.io_data.dates import Dates_Operations
-
-from OMA_tools.regions.data_extraction.task_builder import *
-from OMA_tools.regions.data_extraction.data_coworker import EmployeeExportService
-from OMA_tools.regions.data_extraction.leader_ship import LeaderShipDataExtractor
+from OMA_tools.regions.data_extraction.export_data import *
 from OMA_tools.regions.ttv_forecast.ttv_constants import Holidays, Prophet_Constants
+from OMA_tools.io_data.colors import *
 
 from prophet import Prophet
 import logging
@@ -24,171 +15,196 @@ logging.getLogger('log').setLevel(logging.INFO)
 logging.getLogger("cmdstanpy").propagate = False
 logging.getLogger("log").propagate = False
 logging.getLogger("cmdstanpy").disabled = True
-from OMA_tools.regions.ttv_forecast.constants import Holidays, Prophet_Constants
-
-from OMA_tools.io_data.colors import *
 
 
 import warnings
 warnings.filterwarnings('ignore')
 
+BCA_NEED_REPLACE = {
+        'All 18+': 'ВСЕ 18+',
+        'All 14-59': 'ВСЕ 14-59',
+        'All 14-44': 'ВСЕ 14-44',
+        'All 25-54': 'ВСЕ 25-54',
+        'All 6-54': 'ВСЕ 6-54',
+        'All 10-45': 'ВСЕ 10-45',
+        'All 14-54': 'ВСЕ 14-54',
+        'All 4-45': 'ВСЕ 4-45',
+        'All 25-49': 'ВСЕ 25-49',
+        'W 25-59': 'Ж 25-59',
+        'W 14-44': 'Ж 14-44'
+}
 
-class TTV_Calculation:
-    def __init__(self, date_filter, tasks_json):
+
+class TTVEngine:
+    """
+        Класс для выгрузки и прогнозирования статистики TTV 
+    """
+    def __init__(self, date_filter: list):
+        """
+            Конструктор класса.
+
+            Параметры:
+            ----------
+                date_filter: list
+                    Временной период для выгрузки данных
+        """
         self.date_filter = date_filter
-        self.tasks_json = tasks_json
+
+        self.statistics = ['TTVRtgPer']
     
 
-    def get_data(self):
+    def data_file_updation_by_days(
+            self, 
+            exported_ttv: dict, 
+            columns_order_dict: dict, 
+            file_path: str, 
+            save_to_output_file = True
+        ):
         """
-            Метод для выгрузки данных из API.
-        """
-        #with WrapperNoPrints():
-        df = BaseDataService._execute_tasks(self.tasks_json)
-        return df
-    
+            Метод для обновления файла с фактическими данными в разбивке по дням.
 
-    def main_api_calculation(
-                        self,
-                        filename_fact_data: str,
-                        columns_order_dict: dict,
-                        slices = ['researchDate'],
-                        statistics = ['TTVRtgPer']
-                        ):
+            Параметры:
+            ----------
+                exported_ttv: dict
+                    Свежевыгруженные данные по TTV в разбивке по дням.
+                columns_order_dict: dict
+                    Словарь с порядком столбцов для таблиц
+                file_path: str
+                    Путь к файлу с фактическими данными.
+                save_to_output_file: bool
+                    Булева переменная. Если True, то производится сохранение в выходной файл. В противном случае нет. По умолчанию "True".
         """
-            Осуществление выгрузки по дням для дальнейшего прогнозирования.
-            Args:
-                filename_fact_data: путь к файлу с фактическими данными.
-            Returns:
-                total: Датафрейм с историческими данными.
-        """
-        # 1. Выгрузка по всем данным
-        results = {}
-        for group, json_tasks_full in copy.deepcopy(self.tasks_json).items():
-            results[group] = EmployeeExportService.process_tasks_parallel(
-                                                        json_tasks_full, 
-                                                        lambda x: TTV_Calculation(self.date_filter, x).get_data()
-                                                    )
-        
-        # 2. Приведение данных к нужному виду
-        results_new = {}
-        for bca, df in results['main'].items():
-            
-            if bca != 'Kazan':
-                # Приводим порядок столбцов в соответствие с условиями расчета
-                df = df[['prj_name'] + slices + statistics]
-                df_= pd.pivot_table(df, values = statistics,
-                                    index = ['researchDate'], 
-                                    columns = ['prj_name'])
+        # ШАГ 1. Преобразования с данными. Приведение к виду, который указан в таблицу с историческими данными
+        ttv_results = []
+        for bca, df in exported_ttv.items():
+            df['ЦА'] = df['ЦА'].replace(BCA_NEED_REPLACE)
+            df['Канал'] = (df['regionName'] + ' ' + df['ЦА']).str.replace(' ВСЕ ', ' ', regex = False)
 
-                data = df_.rename_axis(None, axis = 0)
-                data.columns = data.columns.droplevel(0)
-                data_ = data[columns_order_dict[bca]]
-                data_.reset_index(inplace = True)
-                data_ = data_.rename(columns = {'index': 'date'})
-                data_['date'] = data_['date'].apply(lambda x: pd.to_datetime(x))
-                results_new[bca] = data_
+            df_pivoted = (
+                df.drop_duplicates(subset=['Date', 'regionName'], keep = 'first')
+                [['Date', 'Канал', 'TTVRtgPer']]
+                .pivot(index = 'Date', columns = 'Канал', values = 'TTVRtgPer')
+                .reset_index()
+                .rename(columns = {'Date': 'Дата'})
+            )
+            ttv_results.append(df_pivoted)
 
-            elif bca == 'Kazan':
-                # Приводим порядок столбцов в соответствие с условиями расчета
-                df = df[['prj_name'] + slices + statistics]
-                df = df.drop(columns = ['prj_name'])
-                df.rename(columns = {'researchDate': 'date', 'TTVRtgPer': 'КАЗАНЬ 10-45'}, inplace = True)
-                df['date'] = df['date'].apply(lambda x: pd.to_datetime(x))
-                results_new[bca] = df
-        
-        # 3. Формирование выходного словаря для дальнейшей работы
-        dict_data_api = {
-            'All 4-45': results_new['All 4-45'], 
-            'All 6-54': results_new['All 6-54'], 
-            'All 14-54': results_new['All 14-54'], 
-            'All 18+': results_new['All 18+'], 
+        # ШАГ 2. JOIN всех таблиц по всем аудиториям в одну большую таблицу для удобства
+        merged = reduce(
+            lambda l, r: pd.merge(l, r, on = 'Дата', how = 'outer'),
+            ttv_results,
+        )
+
+        # ШАГ 3. Выстраивание нужного порядка столбцов для каждой группы
+        result = {
+            bca: merged[['Дата'] + cols]
+            for bca, cols in columns_order_dict.items()
+        }
+
+        # ШАГ 4. Формирование выходного словаря для дальнейшей работы
+        total_new = {
+            'All 4-45': result['All 4-45'], 
+            'All 6-54': result['All 6-54'], 
+            'All 14-54': result['All 14-54'], 
+            'All 18+': result['All 18+'], 
             'EKB_NN_KZN': Table.make_left_join(
-                                    results_new['Ekaterinburg'], 
-                                    results_new['Kazan'], 
-                                    results_new['Nizniy_Novgorod'], 
-                                    key = 'date'
+                                    result['Ekaterinburg'], 
+                                    result['Kazan'], 
+                                    result['Nizniy_Novgorod'], 
+                                    key = 'Дата'
                                     ), 
-            'Novosibirsk': results_new['Novosibirsk'], 
-            'SaintPetersburg': results_new['SaintPetersburg']}
-
-        # 4. Чтение файла с историческими данными и его обновление
-        fact = File(filename_fact_data).from_file(skiprows = 0, index_col = 0)
-        total_old = Dict_Operations(fact).replace_keys_in_dict(['All 4-45', 
-                                                                'All 6-54', 
-                                                                'All 14-54', 
-                                                                'All 18+', 
-                                                                'EKB_NN_KZN', 
-                                                                'Novosibirsk', 
-                                                                'SaintPetersburg'])
-        for bca, df in total_old.items():
-            total_old[bca] = Table.update_table(total_old[bca], dict_data_api[bca], 'date')
+            'Novosibirsk': result['Novosibirsk'], 
+            'SaintPetersburg': result['SaintPetersburg']}
         
-        # 5. Сохранение последних 28 дней в файл
-        File(filename = filename_fact_data).to_file(total_old)
 
-        try:
-            # Установка внешнего вида итоговой таблицы по дням за последние 28 дней
-            writer = pd.ExcelWriter(filename_fact_data, engine = 'xlsxwriter')
-            for key, df in total_old.items():
-                Table(df = df).make_style_of_table(writer = writer, sheet_name = key, width_col_1 = 4.5, width_col_2 = 17.57, width_col_3 = 15.86)
-            writer.close()
-            print("✅ Файл успешно сохранен")
-        except Exception as e:
-            print(f"⚠️ Ошибка при сохранении: {e}")
-        return total_old
-    
+        # ШАГ 5. Чтение файла с историческими данными и его обновление
+        if save_to_output_file:
+            # Чтение старых данных из исторического файла
+            total_old = pd.read_excel(file_path, sheet_name = None)
 
-    def api_calculation_fact_month(
-                            self, 
-                            girls_cities: str, 
-                            filename_output: str, 
-                            statistics = ['TTVRtgPer'], 
-                            slices = ['regionName']
-                            ):
+            # Обновление таблиц
+            updated_dict = {}
+            for bca, old_df in total_old.items():
+                new_data = total_new[bca]
+                
+                if len(new_data) != 0:
+                    old_df['Дата'] = pd.to_datetime(old_df['Дата'])
+                    new_data['Дата'] = pd.to_datetime(new_data['Дата'])
+                    updated_dict[bca] = Builder().update_table(old_df, new_data, 'Дата')
+            
+            # Сохранение в файл обновленных данных
+            Builder().save_tables_to_excel(updated_dict, file_path, 'Дата')
+
+        return updated_dict
+
+
+    def calculate_fact_month(
+            self, 
+            tasks_json_full: dict, 
+            girls_cities_file_path: str,
+            filepath_output: str,
+            statistics = ['TTVRtgPer']
+        ):
         """
-            Осуществление выгрузки фактической части месяца.
-            Args:
-                girls_cities: путь к файлу, в котором отражен список каналов-городов, закрепленный за каждой из ответственных.
-                filename_output: путь к файлу, в котором будет храниться выгрузка по фактическим данным.
-            Returns:
+            Метод для выгрузки фактической части месяца по TTV.
+
+            Параметры:
+            ----------
         """
-        print(Color.BOLD + Color.BLUE + '=== 🕑 НАЧИНАЮ ВЫГРУЗКУ ФАКТИЧЕСКОЙ ЧАСТИ МЕСЯЦА ДЛЯ TTV ===' + Color.END)
-        # 1. Выгрузка данных для всевозможных групп
-        data_api = LeaderShipDataExtractor.process_tasks_with_validation(
-                                self.tasks_json,
-                                lambda x: TTV_Calculation(self.date_filter, x).get_data()
-                            )
-        # Приводим порядок столбцов в соответствие с условиями расчета
-        data_api = data_api[['prj_name'] + slices + statistics]
+        import time
+        start = time.perf_counter()
 
-        full_data = data_api[['prj_name', 'TTVRtgPer']]
-        full_data = full_data[full_data['TTVRtgPer'] != 0]
-        full_data.rename(columns = {'prj_name': 'Регион', 'TTVRtgPer': 'TTV'}, inplace = True)
+        exp_serv = ExportService(self.date_filter)
+        export = partial(
+            exp_serv.export_one,
+            export_func = exp_serv.export_period,
+            statistics = statistics
+        )
 
-        # 2. Формирование выходной таблицы с фактическими данными, исходя из распределения БЦА и каналов-городов между ответственными девочками.
-        df_dict = File(girls_cities).from_file(0)
-        girls = Dict_Operations(df_dict).replace_keys_in_dict(list_of_replacements = ['Tatyana', 'Maria', 'Kseniia'])
+        fact_month_results = {}
+        with ThreadPoolExecutor(max_workers = 8) as executor:
+            futures = {
+                executor.submit(export, bca, task_json): bca
+                for bca, task_json in tasks_json_full.items()
+            }
+            for future in as_completed(futures):
+                bca, df = future.result()
+                fact_month_results[bca] = df
+        
+        end = time.perf_counter()
+        print('\n')
+        print(Color.BOLD + Color.GREEN + '=== ДАННЫЕ ВЫГРУЖЕНЫ. ===' + Color.END)
+        print(f'Время расчета задач по факту вышло: {((end - start) / 60.):0.2f} мин.')
 
-        new_dict = {}
-        for girl, ttv in girls.items():
-            ttv['Регион'] = ttv['Регион'].str.upper()
-            df = pd.merge(ttv, full_data, how = 'inner', on = 'Регион')
-            df.drop_duplicates(inplace = True)
-            df_ = df.set_index('Регион').T
-            new_dict[girl] = df_
+        ttv_results = []
+        for bca, df in fact_month_results.items():
+            df['ЦА'] = df['ЦА'].replace(BCA_NEED_REPLACE)
+            df['Регион'] = (df['regionName'] + ' ' + df['ЦА']).str.replace(' ВСЕ ', ' ', regex = False)
+            df = df[['Регион', 'TTVRtgPer']]
+            ttv_results.append(df)
+        full_table = pd.concat(ttv_results).reset_index(drop = True)
+        full_table.rename(columns = {'TTVRtgPer': 'TTV'}, inplace = True)
+        
+        reference_table = pd.read_excel(girls_cities_file_path, sheet_name = None)
 
+        results_by_girls = {}
+        for girl, df in reference_table.items():
+            df['Регион'] = df['Регион'].str.upper()
+            result = pd.merge(df, full_table, on = ['Регион'], how = 'inner')
+            results_by_girls[girl] = result.set_index('Регион').T
+        
         try:
-            File(filename_output).to_file(new_dict)
+            File(filepath_output).to_file(results_by_girls)
             print('✅ Файл успешно сохранен')
             
         except Exception as e:
             print(f"⚠️ Ошибка при сохранении: {e}")
+        
+        return results_by_girls
 
-        return new_dict
 
 
-class TTV_Forecast:
+class TTVForecast:
     """
         Класс для прогнозирования Регионального TTV с использованием модели Prophet.
     """
@@ -354,4 +370,3 @@ class TTV_Forecast:
                         file_names = file_names)
         
         print(Color.BOLD + Color.VIOLET + '=== Данные выгружены и сохранены. Спасибо за ваше ожидание! 😊 ===' + Color.END)
-

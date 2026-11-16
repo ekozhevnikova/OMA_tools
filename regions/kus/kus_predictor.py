@@ -1,37 +1,56 @@
 import pandas as pd
 from pandas.tseries.offsets import DateOffset
-import numpy as np
-import xlsxwriter
-import copy
-import re
 import os
-from datetime import datetime, timedelta, date
-
-import threading
-from threading import Lock
-import multiprocessing as mp
-import concurrent.futures
+from datetime import datetime, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-
-import locale
-locale.setlocale(locale.LC_ALL,'ru_RU')
 
 from OMA_tools.io_data.operations import File, Table, Dict_Operations
 from OMA_tools.io_data.dates import Dates_Operations
+from OMA_tools.io_data.colors import *
 
-from OMA_tools.regions.data_extraction.task_builder import *
-from OMA_tools.regions.data_extraction.data_coworker import EmployeeExportService
-from OMA_tools.regions.data_extraction.leader_ship import LeaderShipDataExtractor
+from OMA_tools.regions.data_extraction.export_data import *
 
 
-class KUS_Calculation:
+MONTHS_RU = {
+    1: 'Январь', 2: 'Февраль', 3: 'Март', 4: 'Апрель',
+    5: 'Май', 6: 'Июнь', 7: 'Июль', 8: 'Август',
+    9: 'Сентябрь', 10: 'Октябрь', 11: 'Ноябрь', 12: 'Декабрь',
+}
+
+
+BCA_NEED_REPLACE = {
+        'All 18+': 'ВСЕ 18+',
+        'All 14-59': 'ВСЕ 14-59',
+        'All 14-44': 'ВСЕ 14-44',
+        'All 25-54': 'ВСЕ 25-54',
+        'All 6-54': 'ВСЕ 6-54',
+        'All 10-45': 'ВСЕ 10-45',
+        'All 14-54': 'ВСЕ 14-54',
+        'All 4-45': 'ВСЕ 4-45',
+        'All 25-49': 'ВСЕ 25-49',
+        'W 25-59': 'Ж 25-59',
+        'W 14-44': 'Ж 14-44'
+}
+
+REPLACEMENTS = {
+            'телеканал': 'канал',
+            'санкт-петербург санкт-петербург': 'телеканал санкт-петербург',
+            'первый канал': 'первый',
+            'пятый канал': '5 канал',
+            'тв-3': 'тв3'
+}
+
+
+
+class KUSCalculation:
     """
         Класс для выгрузки данных по Эфирному рейтингу для дальнейшего прогнозирования КУСа.
     """
-
     def __init__(self, date_filter):
         self.date_filter = date_filter
+
+        target_date = pd.to_datetime(self.date_filter[0][0])
+        self.target_date_str = f"{MONTHS_RU[target_date.month]} {target_date.year}"
     
 
     @staticmethod
@@ -45,347 +64,243 @@ class KUS_Calculation:
         time_str = str(time_int).zfill(6)   
 
         return f'{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}'
-    
 
-    @staticmethod
-    def extract_city(channel_name: str):
-        """
-            Вспомогательный метод для извлечения города из названия канала
-        """
-        match = re.search(r'\((.*?)\)', channel_name)
-        if match:
-            return match.group(1)
-        return None
-        
-        
-    @staticmethod
-    def sum_2_channels(
-                df_1: pd.DataFrame, 
-                df_2: pd.DataFrame, 
-                keys: list, 
-                flag = False
-                ) -> pd.DataFrame:
-        """
-            Функция для суммирования значений по двум каналам. Применяется для Р1, ГТРК, Пятница (ЕКБ), Четвертый канал (ЕКБ)
-            flag = False: обновление в середине месяца
-            flag = True: закрытие месяца
-        """
-        # Суммирование России 1 и ГТРК
-        data_merged = pd.merge(df_1, df_2, on = keys, how = 'left')
-        data_merged['TVR'] = data_merged['TVR_x'] + data_merged['TVR_y']
-        data_merged.rename(columns = {'Month_x': 'Month', 'ChannelBCA_x': 'ChannelBCA'}, inplace = True)
 
-        if flag == True:
-            columns = ['Month', 'ChannelBCA', 'time', 'TVR']
-        else:
-            columns = ['Month', 'ChannelBCA', 'TVR'] 
+    def calculation(
+            self, 
+            tasks_json_full: dict, 
+            columns_order_path: str,
+            by_slots: bool = False
+        ):
+        """
+            Метод для выгрузки данных из API.
+
+            Параметры:
+            ----------
+                tasks_json_full: dict:
+                    Словарь из сформированных задач в формате JSON.
+                columns_order_path: str
+                    Путь к файлу с нужным порядком колонок.
+                by_slots: bool
+                    Если True, происходит выгрузка по слотам. Нужна для закрытия месяца (!!!).
+                    В противном случае делается обычная выгрузка рейтингов.
             
-        return data_merged[columns]
-    
-
-    @staticmethod
-    def clean_table(table):
+            Returns:
+            ----------
+                pd.DataFrame
+                    Отсортированная итоговая таблица.
         """
-            Метод для зачистки данных.
-        """
-        # Создаем копию, чтобы не модифицировать исходные данные
-        table = table.copy()
+        # ШАГ 1. Загрузка порядка колонок
+        columns_order = Dict_Operations.load_pkl_file(columns_order_path)
 
-        # 1. Обработка ChannelBCA
-        table['ChannelBCA'] = table['ChannelBCA'].str.replace(') ', ',', regex = False)
+        columns_table = pd.concat([
+            pd.DataFrame({'tvCompanyName': cols[1:], 'ЦА': bca})
+            for bca, cols in columns_order.items()
+        ]).reset_index(drop = True)
 
-        # Разделение на Channel и BCA
-        table[['Channel', 'BCA']] = table['ChannelBCA'].str.split(',', expand = True, n = 1)
+        # ШАГ 2. Выгрузка данных через API
+        import time
+        start = time.perf_counter()
 
-        # 2. Нормализация названий каналов
-        channel_replacements = {
-            'ТЕЛЕКАНАЛ': 'канал',
-            'САНКТ-ПЕТЕРБУРГ (САНКТ-ПЕТЕРБУРГ': 'телеканал санкт-петербург',
-            ' (': ' ',
-            'ПЕРВЫЙ КАНАЛ': 'ПЕРВЫЙ',
-            'ПЯТЫЙ КАНАЛ': '5 канал',
-            'ТВ-3': 'тв3'
+        results = {}
+        exp_serv = ExportService(self.date_filter)
+
+        export_kwargs = dict(
+            export_func = exp_serv.export_period,
+            statistics = ['RtgPer'],
+        )
+        if by_slots:
+            export_kwargs['slices'] = ['tvCompanyName', 'regionName', 'timeBand60']
+
+        export = partial(exp_serv.export_one, **export_kwargs)
+
+        with ThreadPoolExecutor(max_workers = 8) as executor:
+            futures = {
+                executor.submit(export, bca, task_json): bca
+                for bca, task_json in tasks_json_full.items()
+            }
+            for future in as_completed(futures):
+                bca, df = future.result()
+                results[bca] = df
+        
+        end = time.perf_counter()
+        print('\n')
+        print(Color.BOLD + Color.GREEN + '=== ДАННЫЕ ВЫГРУЖЕНЫ. ДЕЛАЮ ПРЕОБРАЗОВАНИЯ. ===' + Color.END)
+        print(f'Время расчета задач по факту вышло: {((end - start) / 60.):0.2f} мин.')
+
+        # ШАГ 4. Приведение слотов (только если by_slots)
+        if by_slots:
+            for bca, df in results.items():
+                df['timeBand60'] = df['timeBand60'].apply(KUSCalculation.format_time)
+        
+
+        # ШАГ 5. МАНИПУЛЯЦИИ С "РОССИЯ 1" И КАНАЛОВ "ГТРК" ДЛЯ АУДИТОРИИ ВСЕ 18+
+        all_18 = results['All 18+'].copy()
+        all_14_44 = results['All 14-44'].copy()
+
+        merge_kwargs = dict(
+            all_18_df=all_18,
+            all_14_44_df=all_14_44,
+            statistic='RtgPer',
+        )
+        if by_slots:
+            merge_kwargs['columns_to_merge'] = ['regionName', 'ЦА', 'timeBand60']
+            merge_kwargs['include_time_band'] = True
+        else:
+            merge_kwargs['columns_to_merge'] = ['regionName', 'ЦА']
+            merge_kwargs['include_time_band'] = False
+
+        all_18_new, all_14_44_new = exp_serv.sum_2_channels(**merge_kwargs)
+        results['All 18+'] = all_18_new
+        results['All 14-44'] = all_14_44_new
+
+        # ШАГ 6. Итоговый датафрейм
+        result_df = pd.concat(results.values()).reset_index(drop = True)
+        results_new = pd.merge(
+            columns_table, result_df,
+            on=['tvCompanyName', 'ЦА'], how = 'inner'
+        ).reset_index(drop = True)
+        results_new['Month'] = self.target_date_str
+
+        rename_map = {
+            'tvCompanyName': 'Channel',
+            'RtgPer': 'TVR',
+            'ЦА': 'BCA',
         }
+        if by_slots:
+            rename_map['timeBand60'] = 'time'
 
-        for old, new in channel_replacements.items():
-            table['Channel'] = table['Channel'].str.replace(old, new, regex = False)
+        results_new.rename(columns = rename_map, inplace = True)
 
-        # 3. Приведение к нижнему регистру
-        table['Channel'] = table['Channel'].str.lower()
-        table['BCA'] = table['BCA'].str.lower()
+        output_cols = ['Month', 'TVR', 'Channel', 'BCA']
+        if by_slots:
+            output_cols = ['Month', 'time', 'TVR', 'Channel', 'BCA']
 
-        # 4. Обработка даты
-        if 'Month' in table.columns and not table.empty:
-            try:
-                first_month = pd.to_datetime(table['Month'].iloc[0])
-                month_str = datetime.strftime(first_month, '%B %Y')
-                table['Month'] = month_str
-            except (ValueError, TypeError) as e:
-                print(f"Ошибка при обработке даты: {e}")
+        results_new = results_new[output_cols]
 
-        # 5. Удаление исходной колонки
-        table = table.drop(['ChannelBCA'], axis = 1)
+        # Замена значений на русские в столбце BCA
+        results_new['BCA'].replace(BCA_NEED_REPLACE, inplace = True)
+        # Убираем скобки из названий каналов-городов
+        results_new['Channel'] = results_new['Channel'].str.replace(r'[()]', '', regex = True)
 
-        return table
-    
+        results_new[['Channel', 'BCA']] = (
+            results_new[['Channel', 'BCA']].apply(lambda s: s.str.lower())
+        )
 
-    def get_data_total_day(
-                    self,
-                    tasks_json: dict,
-                    bca: str,
-                    statistics = ['RtgPer'],
-                    slices = ['researchMonth', 'tvCompanyName'],
-                    ):
-        # Убираем проверку на self.tasks_json_fact_month
-        if tasks_json is None:
-            raise ValueError("tasks_json не передан.")
+        sorted_df = results_new.sort_values(['Channel', 'BCA']).reset_index(drop = True)
 
-        #with WrapperNoPrints():
-        df = BaseDataService._execute_tasks(tasks_json)  # Используем переданный tasks_json
+        for old, new in REPLACEMENTS.items():
+            sorted_df['Channel'] = sorted_df['Channel'].str.replace(old, new, regex = False)
 
-        # Приводим порядок столбцов в соответствие с условиями расчета
-        df = df[slices + statistics]
-        df['BCA'] = bca
+        return sorted_df
 
-        df.rename(columns = {
-                            'researchMonth': 'Month', 
-                            'RtgPer': 'TVR', 
-                            'tvCompanyName': 'Channel'
-                            }, 
-                  inplace = True)
-        filtered_data = df[~df['Channel'].str.contains(' ДОП', na = False)]
-        filtered_data_ = filtered_data[['Month', 'Channel', 'BCA', 'TVR']]
-        filtered_data_.insert(loc = 2, column = 'Channel new', value = filtered_data_['Channel'] + ' ' + filtered_data_['BCA'])
-        data = filtered_data_[['Month', 'Channel new', 'TVR']]
-        data_final = data.rename(columns = {'Channel new': 'ChannelBCA'})
-        return data_final
-    
 
-    def get_data_by_hours(
-                    self,
-                    tasks_json: dict,
-                    bca: str,
-                    statistics = ['RtgPer'],
-                    slices = ['researchMonth', 'tvCompanyName','timeBand60']
-                    ):
-        if tasks_json is None:
-            raise ValueError("tasks_json не передан.")
-        
-        #with WrapperNoPrints():
-        df = BaseDataService._execute_tasks(tasks_json)
-
-        # Приводим порядок столбцов в соответствие с условиями расчета
-        df = df[slices + statistics]
-        df['BCA'] = bca
-
-        df.rename(columns = {
-                        'researchMonth': 'Month',
-                        'timeBand60':'time', 
-                        'RtgPer': 'TVR', 
-                        'tvCompanyName': 'Channel'}, 
-                        inplace = True)
-        filtered_data = df[~df['Channel'].str.contains(' ДОП', na = False)]
-        filtered_data_ = filtered_data[['Month','Channel','time', 'BCA', 'TVR']]
-        filtered_data_.insert(loc = 2, column = 'Channel new', value = filtered_data_['Channel'] + ' ' + filtered_data_['BCA'])
-        data = filtered_data_[['Month', 'Channel new', 'time', 'TVR']]
-        data.rename(columns = {'Channel new': 'ChannelBCA'}, inplace = True)
-        #Приведение слота к нормальному виду
-        data['time'] = data['time'].apply(KUS_Calculation.format_time)
-        return data
-    
-
-    @staticmethod
-    def split_dict_to_dataframes(api_results: dict, keys_to_merge: list, flag = False):
+    def make_ouput_table(
+            self,
+            tasks_json_fact_month: dict,
+            columns_order_path: str,
+            output_path: str,
+            jasks_json_by_slots: dict = None,
+            close_month: bool = False
+        ):
         """
-            Вспомогательный метод для генерации датафреймов по основной массе каналов-городов, каналов ГТРК и четвертый канал.
+            Метод для формирования выходной таблицы с выгрузкой в зависимотси от того, какое сегодня обновление: закрытие месяца или обычное.
+
+            Параметры:
+            ----------
+                tasks_json_fact_month: dict
+                    Задачи в формате JSON для расчета фактической части месяца (применительно для обновления в середине месяца).
+                columns_order_path: str
+                    Путь к файлу с нужным порядком колонок.
+                output_path: str
+                    Путь к папке, куда сохраняются исторические данные.
+                jasks_json_by_slots: dict
+                    Задачи в формате JSON для расчета рейтингов по слотам (применительно для закрытия месяца).
+                close_month: bool
+                    Если True, то месяц закрывается. В противном случае производится обычное обновление в середине месяца. 
+                    По умолчанию False.
+
+            Returns:
+            ----------
+                api_results: list
         """
-        # 1. Объединение основной массы каналов-городов и локальных каналов Санкт-Петербург
-        main = []
-        for bca, df in api_results['main'].items():
-            main.append(df)
-        main_df = pd.concat(main)
+        api_results = []
 
-        res_local_channels = []
-        for bca, df in api_results['spb'].items():
-            res_local_channels.append(df)
-        local = pd.concat(res_local_channels)
-        # Удаление ненужных подстрок из БЦА
-        local['ChannelBCA'] = local['ChannelBCA'].str.replace(r'_СПБ_\d+', '', regex = True)
-
-        general_df = pd.concat([main_df, local]).reset_index(drop = True)
-
-        # 2. Объединение каналов ГТРК
-        gtrk_res = []
-        for bca, df in api_results['gtrk'].items():
-            gtrk_res.append(df)
-        gtrk = pd.concat(gtrk_res)
-        # Удаление ненужных подстрок из БЦА
-        gtrk['ChannelBCA'] = gtrk['ChannelBCA'].str.replace(r'_ГТРК_\d+', '', regex = True)
-
-        # 3. Выделение 4 канала
-        task_4_channel = list(api_results['channel_4'].values())[0]
-        task_4_channel['ChannelBCA'] = task_4_channel['ChannelBCA'].str.replace(' Пятница ЕКБ', '')
-
-        # 4. Применяем функцию к столбцу ChannelBCA
-        gtrk['City'] = gtrk['ChannelBCA'].apply(KUS_Calculation.extract_city)
-
-        # 5. Отбор России 1
-        russia_1 = general_df[general_df['ChannelBCA'].str.contains('РОССИЯ 1')]
-        russia_1['City'] = russia_1['ChannelBCA'].apply(KUS_Calculation.extract_city)
-
-        # 6. Суммирование России 1 и ГТРК
-        if flag == True:
-            Russia_1 = KUS_Calculation.sum_2_channels(russia_1, gtrk, keys = keys_to_merge, flag = True)
-        
-        else:
-            Russia_1 = KUS_Calculation.sum_2_channels(russia_1, gtrk, keys = keys_to_merge)
-
-
-        # 7. Отбор ПЯТНИЦА ЕКБ
-        pyatniza = general_df[general_df['ChannelBCA'] == 'ПЯТНИЦА (ЕКАТЕРИНБУРГ) все 14-44']
-        pyatniza['City'] = pyatniza['ChannelBCA'].apply(KUS_Calculation.extract_city)
-        task_4_channel['City'] = task_4_channel['ChannelBCA'].apply(KUS_Calculation.extract_city)
-
-        # 8. Суммирование ПЯТНИЦА ЕКБ и ЧЕТВЕРТЫЙ КАНАЛ
-        if flag == True:
-            Pyatniza = KUS_Calculation.sum_2_channels(pyatniza, task_4_channel, keys = keys_to_merge, flag = True)
-        else:
-            Pyatniza = KUS_Calculation.sum_2_channels(pyatniza, task_4_channel, keys = keys_to_merge)
-
-        main = general_df[
-                            ~general_df['ChannelBCA'].str.contains('РОССИЯ 1', case = False, na = False)
-                            &
-                            ~general_df['ChannelBCA'].str.contains('ПЯТНИЦА.*ЕКАТЕРИНБУРГ', case = False, na = False)
-                        ]
-        
-        full_result = pd.concat([main, Russia_1, Pyatniza]).reset_index(drop = True)
-
-        return full_result
-    
-    
-
-    def extract_data_fact_month(
-                            self,
-                            tasks_json,
-                            statistics = ['RtgPer'],
-                            slices = ['researchMonth', 'tvCompanyName'],
-                            sortings = {'researchMonth': 'ASC', 'tvCompanyName': 'ASC'}
-                            ):
-        """
-            Метод для извлечения данных за фактическую часть месяца.
-        """
-        # 1. Выгрузка данных из API
-        results = {}
-        for group, json_tasks_full in copy.deepcopy(tasks_json).items():  # Используем локальную переменную
-            
-            # Создаем временный словарь для хранения соответствий
-            temp_dict = {}
-            for bca, tasks_data in json_tasks_full.items():
-                # Сохраняем ключ в данных
-                modified_data = {'bca': bca, 'tasks': tasks_data}
-                temp_dict[bca] = modified_data
-            
-            def process_with_bca(modified_data):
-                # Создаем экземпляр и передаем tasks_json напрямую в метод
-                calculator = KUS_Calculation(self.date_filter)
-                return calculator.get_data_total_day(
-                    tasks_json=modified_data['tasks'],  # Передаем tasks_json как параметр
-                    bca=modified_data['bca']
-                )
-            
-            results[group] = EmployeeExportService.process_tasks_parallel(temp_dict, process_with_bca)
-        
-        # 2. Формирование выходных датафреймов
-        full_result = KUS_Calculation.split_dict_to_dataframes(results, ['City'])
-
-        # Обработка
-        results_df = full_result.reset_index(drop = True)
-        results_df = KUS_Calculation.clean_table(results_df)
-        return results_df
-    
-
-    def extract_data_by_slots(
-                        self,
-                        tasks_json, 
-                        data_fact_month,
-                        statistics = ['RtgPer'],
-                        slices = ['researchMonth', 'tvCompanyName','timeBand60'],
-                        sortings = {'researchMonth': 'ASC', 'tvCompanyName': 'ASC'}
-                        ):
-        """
-            Метод для извлечения данных за фактическую часть месяца.
-        """
-        # 1. Выгрузка данных из API
-        results = {}
-        for group, json_tasks_full in copy.deepcopy(tasks_json).items():  # Используем локальную переменную
-            
-            # Создаем временный словарь для хранения соответствий
-            temp_dict = {}
-            for bca, tasks_data in json_tasks_full.items():
-                # Сохраняем ключ в данных
-                modified_data = {'bca': bca, 'tasks': tasks_data}
-                temp_dict[bca] = modified_data
-            
-            def process_with_bca(modified_data):
-                # Создаем экземпляр и передаем tasks_json напрямую в метод
-                calculator = KUS_Calculation(self.date_filter)
-                return calculator.get_data_by_hours(
-                    tasks_json=modified_data['tasks'],  # Передаем tasks_json как параметр
-                    bca=modified_data['bca']
-                )
-            
-            results[group] = EmployeeExportService.process_tasks_parallel(temp_dict, process_with_bca)
-        
-        # 2. Формирование выходных датафреймов
-        full_result = KUS_Calculation.split_dict_to_dataframes(results, ['City', 'time'], flag=True)
-
-        # Обработка и объединение с выгрузкой без разбивки
-        results_df_h = full_result.reset_index(drop=True)
-        results_df_h = KUS_Calculation.clean_table(results_df_h)
-
-        results_df_all = results_df_h.merge(data_fact_month, how='left', on = ['Month', 'Channel', 'BCA'], suffixes=('', ' Total'))
-        return results_df_all.sort_values('time').reset_index(drop=True)
-    
-
-    def API_calculation(
-                    self, 
-                    tasks_json_fact_month: dict,
-                    path: str, 
-                    jasks_json_by_slots = None,
-                    close_month: bool = False
-                    ) -> list:
-        """
-            Метод для постобработки результатов
-            Args:
-                path: путь к папке, где хранятся исторические данные.
-                close_month: флаг, отвечающий за закрытие месяца. Если True, то месяц закрываем. В противном случае нет.
-            Return:
-                res: список из результатов. Первый элемент - выгрузка по фактической частит месяца, второй элемент - месяц целиком
-        """
+        # Закрытие месяца
         if close_month == True:
-            print('Выгружаю предыдущий месяц. Пожалуйста, подождите ...')
-            fact_month = self.extract_data_fact_month(tasks_json_fact_month)
-            print('✅ Данные за фактическую часть месяца выгружены.')
-            print('#' * 80)
-            print('Выгружаю предыдущий месяц с разбивкой по слотам. Пожалуйста, подождите ...')
-            full_month = self.extract_data_by_slots(jasks_json_by_slots, fact_month)
-            print('✅ Данные за предыдущий месяц выгружены. Спасибо за ваше ожидание! 😊')
-            
-            # Форматируем название выгружаемого месяца
-            first_date = self.date_filter[0][0] 
-            date_object = datetime.strptime(first_date, '%Y-%m-%d')
-            formatted_date = date_object.strftime('%B %Y')
+
+            print(Color.BOLD + Color.CRIMSON + '=== 🚀 СЕГОДНЯ ПРОИЗВОЖУ ЗАКРЫТИЕ ПРОШЛОГО МЕСЯЦА. ===' + Color.END)
+            print(
+                Color.BOLD + Color.CRIMSON + \
+                'ДЕЛАЮ ВЫГРУЗКУ ВСЕГО ПРОШЛОГО МЕСЯЦА, А ТАКЖЕ ВЫГРУЗКУ ВСЕГО ПРОШЛОГО МЕСЯЦА В РАЗБИВКЕ ПО СЛОТАМ.' + \
+                Color.END + '\n'
+            )
+            print(Color.NAVY + 'ВЫГРУЖАЮ ПРЕДЫДУЩИЙ МЕСЯЦ. ПОЖАЛУЙСТА, ПОДОЖДИТЕ ...' + Color.END + '\n')
+
+            fact_month = self.calculation(tasks_json_fact_month, columns_order_path)
+            print('✅ Данные за фактическую часть месяца выгружены. Спасибо за ваше ожидание! 😊' + '\n')
+
+            print(Color.NAVY + 'ВЫГРУЖАЮ ПРЕДЫДУЩИЙ МЕСЯЦ С РАЗБИВКОЙ ПО СЛОТАМ. ПОЖАЛУЙСТА, ПОДОЖДИТЕ ...' + Color.END + '\n')
+            full_month_by_slots = self.calculation(jasks_json_by_slots, columns_order_path, by_slots = True)
+            print('✅ Данные за предыдущий месяц выгружены. Спасибо за ваше ожидание! 😊' + '\n')
+
+            # Объединяем две выгрузки в одну, причем для 
+            full_results = full_month_by_slots.merge(
+                fact_month, 
+                how  = 'left', 
+                on = ['Month', 'Channel', 'BCA'], 
+                suffixes = ('', ' Total')
+            )
+
             # Загружаем в эксель историрование по месяцам
-            full_month.to_excel(path + 'TVR\\' + formatted_date + '.xlsx')
-            
-            res = [fact_month, full_month]
-            return res
+            column_configs = [
+                {'header': 'Month',     'width': 14.0, 'format': 'text'},
+                {'header': 'time',      'width': 10.0, 'format': 'time'},
+                {'header': 'TVR',       'width': 12.0, 'format': 'number'},
+                {'header': 'Channel',   'width': 28.0, 'format': 'text'},
+                {'header': 'BCA',       'width': 14.0, 'format': 'text'},
+                {'header': 'TVR Total', 'width': 12.0, 'format': 'number'},
+            ]
+
+            filename = output_path + self.target_date_str + '.xlsx'
+
+            try:
+                with pd.ExcelWriter(filename, engine = 'xlsxwriter') as writer:
+                    Builder().make_style_of_table(
+                        writer = writer,
+                        df = full_results,
+                        sheet_name = 'Sheet1',
+                        column_configs = column_configs,
+                    )
+            except Exception as e:
+                print(f"❌ Не удалось сохранить файл {filename}: {e}")
+                raise
+            else:
+                print(f"✅ Файл сохранён: {filename}")
+
+            api_results = [fact_month, full_results]
         
+        # Обновление в середине месяца
         else:
-            print('Выгружаю фактическую часть месяца. Пожалуйста, подождите ...')
-            res = [self.extract_data_fact_month(tasks_json_fact_month), None]
-            print('✅ Данные за фактическую часть месяца выгружены. Спасибо за ваше ожидание! 😊')
-            return res
+
+            print(
+                Color.BOLD + Color.ORANGE + \
+                '=== 🚀 СЕГОДНЯ ОБНОВЛЕНИЕ В СЕРЕДИНЕ МЕСЯЦА. ДЕЛАЮ ВЫГРУЗКУ ФАКТИЧЕСКОЙ ЧАСТИ МЕСЯЦА. ===' + \
+                Color.END + '\n'
+            )
+
+            fact_month = self.calculation(tasks_json_fact_month, columns_order_path)
+            print('✅ Данные за фактическую часть месяца выгружены. Спасибо за ваше ожидание! 😊' + '\n')
+            api_results = [fact_month, None]
+        
+        return api_results
+
+
+    
+
+
+
+
 
 
 class KUS_Forecast:

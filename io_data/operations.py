@@ -317,15 +317,15 @@ class Table:
 
         header_format = workbook.add_format({
                                             'bold': True,
-                                            'text_wrap': True, #перенос текста
-                                            'align': 'center', #выравнение текста в ячейке
-                                            'valign': 'vcenter', #выравнение текста в ячейке
+                                            'text_wrap': True,   # перенос текста
+                                            'align': 'center',   # выравнение текста в ячейке
+                                            'valign': 'vcenter', # выравнение текста в ячейке
                                             'border': 0
                                             #'center_across': True
                                         })
         table_fmt = workbook.add_format({'num_format': num_format, 
-                                         'align': 'center', #выравнение текста в ячейке
-                                         'align': 'vcenter', #выравнение текста в ячейке
+                                         'align': 'center',        # выравнение текста в ячейке
+                                         'valign': 'vcenter',      # выравнение текста в ячейке
                                          'border': 0
                                          #'center_across': True
                                          })
