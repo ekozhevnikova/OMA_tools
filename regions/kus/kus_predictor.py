@@ -736,10 +736,6 @@ class KUSForecast:
                     Color.END
                 )
 
-
-                import time
-                start = time.perf_counter()
-
                 kus_calc = KUSCalculation(periods['full_month'])
                 result_df = kus_calc.make_output_table(
                     json_tasks_fact_month, 
@@ -748,9 +744,6 @@ class KUSForecast:
                     json_tasks_full_month,
                     close_month = True
                 )
-
-                end = time.perf_counter()
-                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END + '\n')
 
                 print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
@@ -766,9 +759,6 @@ class KUSForecast:
             else:
                 print(Color.BOLD + "Обновление в середине месяца. Выгружаю фактическую часть Января. Пожалуйста, подождите ..." + Color.END)
 
-                import time
-                start = time.perf_counter()
-
                 kus_calc = KUSCalculation(periods['fact_month'])
                 result_df = kus_calc.make_output_table(
                     json_tasks_fact_month, 
@@ -776,9 +766,6 @@ class KUSForecast:
                     historical_path,
                     json_tasks_full_month
                 )
-
-                end = time.perf_counter()
-                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END)
 
                 print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
@@ -802,9 +789,6 @@ class KUSForecast:
                     "Пожалуйста, подождите ..." + Color.END
                 )
 
-                import time
-                start = time.perf_counter()
-
                 kus_calc = KUSCalculation(periods['full_month'])
                 result_df = kus_calc.make_output_table(
                     json_tasks_fact_month, 
@@ -813,9 +797,6 @@ class KUSForecast:
                     json_tasks_full_month,
                     close_month = True
                 )
-
-                end = time.perf_counter()
-                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END)
 
                 print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
@@ -833,12 +814,9 @@ class KUSForecast:
                 today_month = f"{MONTHS_RU[today.month]}"
                 print(
                     Color.BOLD + Color.SEA_GREEN + \
-                    "Делаю обновление в середине месяца {MONTHS_RU[today.month]}. Выгружаю фактическую часть текущего месяца. " + \
+                    f"Делаю обновление в середине месяца {MONTHS_RU[today.month]}. Выгружаю фактическую часть текущего месяца. " + \
                     "Пожалуйста, подождите ..." + Color.END
                 )
-
-                import time
-                start = time.perf_counter()
 
                 kus_calc = KUSCalculation(periods['fact_month'])
                 result_df = kus_calc.make_output_table(
@@ -847,9 +825,6 @@ class KUSForecast:
                     historical_path,
                     json_tasks_full_month
                 )
-
-                end = time.perf_counter()
-                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END)
 
                 forecast_df = self.make_kus_forecast(
                     current_df_api = result_df, 
