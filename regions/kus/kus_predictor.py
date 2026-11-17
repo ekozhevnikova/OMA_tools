@@ -195,7 +195,7 @@ class KUSCalculation:
         return sorted_df
 
 
-    def make_ouput_table(
+    def make_output_table(
             self,
             tasks_json_fact_month: dict,
             columns_order_path: str,
@@ -224,7 +224,7 @@ class KUSCalculation:
             ----------
                 api_results: list
         """
-        api_results = []
+        api_result_df = []
 
         # Закрытие месяца
         if close_month == True:
@@ -278,7 +278,8 @@ class KUSCalculation:
             else:
                 print(f"✅ Файл сохранён: {filename}")
 
-            api_results = [fact_month, full_results]
+            #api_results = [fact_month, full_results]
+            return fact_month
         
         # Обновление в середине месяца
         else:
@@ -291,21 +292,23 @@ class KUSCalculation:
 
             fact_month = self.calculation(tasks_json_fact_month, columns_order_path)
             print('✅ Данные за фактическую часть месяца выгружены. Спасибо за ваше ожидание! 😊' + '\n')
-            api_results = [fact_month, None]
+            #api_results = [fact_month, None]
+            return fact_month
         
-        return api_results
+        #return api_result
 
 
-    
+class KUSForecast:
+    def __init__(self, ratings_table: pd.DataFrame | None = None):
+        """
+            Конструктор класса.
 
-
-
-
-
-
-class KUS_Forecast:
-    def __init__(self, table):
-        self.table = table
+            Параметры:
+            ----------
+                ratings_table: pd.DataFrame (можно не передавать в конструктор)
+                    Таблица с эфирными и рекламными рейтингами по закрытым месяцам для всех каналов - городов.
+        """
+        self.ratings_table = ratings_table
     
     
     @staticmethod
@@ -318,11 +321,21 @@ class KUS_Forecast:
         return lambda row: 0 if row[denom] == 0 else row[numer] / row[denom]
     
     
-    @staticmethod
-    def read_excel_from_start_marker(file_path: str, start_marker: str = 'Начало периода') -> pd.DataFrame:
+    def read_excel_from_start_marker(self, file_path: str, start_marker: str = 'Начало периода') -> pd.DataFrame:
         """
-            Метод для чтения файла. Файл начинает считываться только тогда, когда найдена определенная строка.
-            Метод возвращает количество строк, которое нужно пропустить в файле для успешного его чтения.
+            Метод для чтения файла с определенной строки. Файл начинает считываться только тогда, когда найдена определенная строка.
+
+            Параметры:
+            ----------
+                file_path: str
+                    Путь к файлу, из которого необходимо извлечь данные.
+                start_marker: str = 'Начало периода'
+                    Строка-маркер, начиная с которого будем считывать файл. По умолчанию 'Начало периода'.
+            
+            Returns:
+            ----------
+                start_row - 1: int
+                    Метод возвращает количество строк, которое нужно пропустить в файле для успешного его чтения.
         """
         # Читаем весь файл для поиска маркера
         df_temp = pd.read_excel(file_path, header = None)
@@ -340,174 +353,511 @@ class KUS_Forecast:
         return start_row - 1
     
     
-    @staticmethod
-    def from_file(path, skip = 0, col_list = [], is_vimb = True):
+    def from_file(self, path: str, skip: int = 0, col_list: list = [], is_vimb: bool = True) -> pd.DataFrame:
         """
-            Метод для чтения данных из папки
+            Метод для чтения данных из указанной папки.
+
+            Параметры:
+            ----------
+                path: str
+                    Путь к папке, в которой хранятся файлы, которые необходимо считать.
+                skip: int = 0
+                    Количество строк, которые нужно скипнуть в файлах.
+                col_list: list
+                    Список номеров колонок, которые нужны для анализа.
+                is_vimb: bool
+                    Булевая переменная.
+                    Если True => считываются файлы с выгрузкой из VIMB с рекламными рейтингами.
+                    Если False => считываются файлы с выгрузками из БД Mediascope с эфирными рейтингами.
+            
+            Returns:
+            ----------
+                result: pd.DataFrame
+                    Таблица с результатом
         """
         files = []
         files += os.listdir(path)
 
         result = pd.DataFrame()
+        df = pd.DataFrame()
+
         for months in files:
+
+            # Если считываем файлы с выгрузками из VIMB
             if is_vimb:
-                num_skiprows = KUS_Forecast.read_excel_from_start_marker(path + months)
-                table = pd.read_excel(path + months, skiprows = num_skiprows, usecols = col_list)
+                num_skiprows = self.read_excel_from_start_marker(path + months)
+                df = pd.read_excel(path + months, skiprows = num_skiprows, usecols = col_list)
+
             else:
-                table = pd.read_excel(path + months, skiprows = skip, usecols = col_list)
-            result = pd.concat([result, table], ignore_index = True)
+                df = pd.read_excel(path + months, skiprows = skip, usecols = col_list)
+
+            result = pd.concat([result, df], ignore_index = True)
 
         return result
     
     
-    @staticmethod
-    def parse_VIMB(table, is_current_month = True):
+    def parse_VIMB(self, df: pd.DataFrame, is_current_month: bool = True) -> pd.DataFrame:
         """
             Метод для парсинга файлов с выгрузкой из ВИМБа.
-            flag = True: текущий месяц
-            flag = False: закрытие месяца
-        """
-        table = table.rename(columns = {'Время эфира с' : 'time',
-                                        'Начало периода':'Month',
-                                        'Открытый объем без учёта квот' : 'Volume',
-                                        'Открытый WGRP без учета квот' : 'GRP',
-                                        'Базовая ЦА' : 'BCA',
-                                        'Ср. рейтинг' : 'tvr_adv',
-                                        'Канал': 'Channel'})  
 
-        table['BCA'] = table['BCA'].str.split(' ', expand = True)[0].str.lower() + ' ' + table['BCA'].str.split(' ', expand = True)[1]
-        table['Channel'] = table['Channel'].str.lower()
+            Параметры:
+            ----------
+                df: pd.DataFrame: 
+                    Таблица, с которой нужно произвести преобразования.
+
+                is_current_month: bool = True
+                    Булева переменная, характеризующая текущее обновление.
+                    Если True => текущий месяц
+                    Если False => закрытие месяца
+            
+            Returns:
+            ----------
+                df: pd.DataFrame
+                    Преобразованная таблица
+        """
+        # Переименование колонок.
+        df.rename(columns = {
+            'Время эфира с' : 'time',
+            'Начало периода':'Month',
+            'Открытый объем без учёта квот' : 'Volume',
+            'Открытый WGRP без учета квот' : 'GRP',
+            'Базовая ЦА' : 'BCA',
+            'Ср. рейтинг' : 'tvr_adv',
+            'Канал': 'Channel'
+        },
+        inplace = True)  
+
+        df['BCA'] = df['BCA'].str.split(' ', expand = True)[0].str.lower() + ' ' + df['BCA'].str.split(' ', expand = True)[1]
+        df['Channel'] = df['Channel'].str.lower()
     
         if is_current_month is not True:
-            table['time'] = table['time'].astype(str)
+            df['time'] = df['time'].astype(str)
 
-        if not pd.api.types.is_datetime64_any_dtype(table['Month']):
-            table['Month'] = pd.to_datetime(table['Month'])
+        if not pd.api.types.is_datetime64_any_dtype(df['Month']):
+            df['Month'] = pd.to_datetime(df['Month'])
         
-        # Теперь применяем strftime ко всему столбцу (векторизованно, без цикла)
-        table['Month'] = table['Month'].dt.strftime('%B %Y')
+        # Теперь применяем strftime ко всему столбцу
+        df['Month'] = df['Month'].dt.strftime('%B %Y')
 
-        return table
+        return df
     
     
-    def predict(self, data_api: pd.DataFrame, first_date, last_date, filepath_vimb_curr_month: str):
+    def fit_predict(
+            self, 
+            data_api: pd.DataFrame, 
+            first_date: str, 
+            last_date: str, 
+            filepath_vimb_curr_month: str
+        ) -> pd.DataFrame:
         """
-            Метод для непосредственного прогнозирования КУС
-            Args:
-                data_api: pd.DataFrame: Выгрузка с TVR из БД Mediascope
-                first_date: Дата начала вывода данных
-                last_date: Дата окончания вывода данных
-                filepath_vimb_curr_month: str: путь к файлу с выгрузкой из VIMB по текущему месяцу
+            Метод для непосредственного прогнозирования КУС.
+
+            Параметры:
+            ----------
+                data_api: pd.DataFrame
+                    Выгрузка с TVR из БД Mediascope ЗА ФАКТИЧЕСКУЮ ЧАСТЬ МЕСЯЦА.
+                first_date: str
+                    Дата начала вывода данных в формате строки.
+                last_date: str
+                    Дата окончания вывода данных в формате строки.
+                filepath_vimb_curr_month: str 
+                    Путь к файлу с выгрузкой из VIMB по текущему месяцу.
+
             Returns:
-                df_result_all: pd.DataFrame: Датафрейм с прогнозом
+            ----------
+                final_result: pd.DataFrame
+                    Итоговая таблица с прогнозом КУС.
         """
+        final_result = pd.DataFrame()
         
         today = date.today()
+
         # дата начала и окончания исторических данных для предсказания куса (база прогноза)
-        first_fact_date = today - pd.offsets.MonthBegin()- DateOffset(months = 6) #1 число пол года назад
-        last_fact_date = today - pd.offsets.MonthBegin()    
-        table = self.table
+        first_fact_date = today - pd.offsets.MonthBegin()- DateOffset(months = 6) # 1е число пол года назад
+        last_fact_date = today - pd.offsets.MonthBegin()   
+
+        #table = self.table
 
         ################################### ОБЩАЯ ПОДГОТОВКА #############################################################
-        table['Month'] = table['Month'].apply(KUS_Forecast.sdate)
-        table['PredWeight'] = table['TVR'] / table['TVR Total']
-        table['PredKM'] = table.apply(KUS_Forecast.div('tvr_adv', 'TVR'), axis = 1)
-        table = table.astype({"PredKM": "float64"})
+        self.ratings_table['Month'] = self.ratings_table['Month'].apply(KUSForecast.sdate)
+        self.ratings_table['PredWeight'] = self.ratings_table['TVR'] / self.ratings_table['TVR Total']
+        self.ratings_table['PredKM'] = self.ratings_table.apply(KUSForecast.div('tvr_adv', 'TVR'), axis = 1)
+        self.ratings_table = self.ratings_table.astype({"PredKM": "float64"})
 
 
         ############################# ПОДСЧЕТ ЗАКРЫТЫХ МЕСЯЦЕВ ВСЕ КАНАЛЫ СРАЗУ #####################################################
-        zakr_piv = table[(table['Month'] >= first_date) & (table['Month'] < last_fact_date)]
-        zakr_piv = zakr_piv.pivot_table(index = 'Channel', columns = ['Month'], values = ['TVR Total', 'Volume', 'GRP'],
-                         aggfunc = {'TVR Total': 'mean', 'Volume': 'sum','GRP': 'sum'})
+        closed_periods_df = self.ratings_table[
+            (self.ratings_table['Month'] >= first_date) & \
+            (self.ratings_table['Month'] < last_fact_date)
+        ]
 
-        if zakr_piv.empty != True:
-            df_zakrytye = zakr_piv['GRP'] * 20 / (zakr_piv['Volume'] * zakr_piv['TVR Total'])
+        closed_periods_df = closed_periods_df.pivot_table(
+            index = 'Channel', 
+            columns = ['Month'],
+            values = ['TVR Total', 'Volume', 'GRP'],
+            aggfunc = {'TVR Total': 'mean', 'Volume': 'sum','GRP': 'sum'}
+        )
+
+        if closed_periods_df.empty != True:
+            normalized_grp = closed_periods_df['GRP'] * 20 / (closed_periods_df['Volume'] * closed_periods_df['TVR Total'])
             
         else:
-            df_zakrytye=pd.DataFrame(index=pd.Index(table['Channel'].unique(),name='Channel'))
+            normalized_grp = pd.DataFrame( index = pd.Index(self.ratings_table['Channel'].unique(), name = 'Channel') )
             print('Нет месяцев в факте!')
 
 
         ############################# ПРОГНОЗ МЕСЯЦЕВ ВСЕ КАНАЛЫ СРАЗУ #####################################################
-        short_pred = table[(table['Month'] >= last_fact_date) & (table['Month'] <= last_date)]
-        short_tmp = table[(table['Month'] >= first_fact_date) & (table['Month'] < last_fact_date)]
 
-        tab_for_fill = short_tmp.pivot_table(index = ['Channel', 'time'],values = ['PredWeight', 'PredKM'],
-                                             aggfunc = {'PredWeight': 'mean', 'PredKM': 'median'})
+        # Прогнозный датафрейм
+        forecast_period = self.ratings_table[
+            (self.ratings_table['Month'] >= last_fact_date) & \
+            (self.ratings_table['Month'] <= last_date)
+        ]
 
-        ans = pd.merge(short_pred[['Channel', 'Month', 'time', 'BCA', 'Volume']], tab_for_fill, how = "left", on = ['Channel', "time"])
+        # Датафрейм с фактическими данными
+        fact_period = self.ratings_table[
+            (self.ratings_table['Month'] >= first_fact_date) & \
+            (self.ratings_table['Month'] < last_fact_date)
+        ]
+
+        fact_period_pivoted = fact_period.pivot_table(
+            index = ['Channel', 'time'],
+            values = ['PredWeight', 'PredKM'],
+            aggfunc = {'PredWeight': 'mean', 'PredKM': 'median'}
+        )
         
-        ans['PredKM']=ans.groupby('Channel')['PredKM'].transform(lambda x: x.fillna(x.rolling(2, min_periods=1).mean().ffill().bfill()))
+        # Join таблиц с фактом и прогнозом
+        forecast_fact_merged = pd.merge(
+            forecast_period[['Channel', 'Month', 'time', 'BCA', 'Volume']], 
+            fact_period_pivoted, 
+            how = "left", 
+            on = ['Channel', "time"]
+        )
         
-        df_prognoz = ans.pivot_table(index = ['Channel'], columns = 'Month', values = ['PredWeight'], aggfunc = lambda x: 
-                        (ans.loc[x.index, 'PredWeight'] * ans.loc[x.index,'PredKM'] * ans.loc[x.index, 'Volume']).sum()/
-                        ans.loc[x.index, 'Volume'].sum()).droplevel(0, axis = 1)
+        # Заполнение пропусков
+        forecast_fact_merged['PredKM'] = forecast_fact_merged.groupby('Channel')['PredKM'].transform(
+            lambda x: x.fillna(x.rolling(2, min_periods = 1).mean().ffill().bfill())
+        )
+
+        # Таблица с прогнозом
+        forecast_df = forecast_fact_merged.pivot_table(
+            index = ['Channel'], 
+            columns = 'Month', 
+            values = ['PredWeight'], 
+            aggfunc = lambda x: ( 
+                forecast_fact_merged.loc[x.index, 'PredWeight'] * forecast_fact_merged.loc[x.index,'PredKM'] * forecast_fact_merged.loc[x.index, 'Volume'] 
+            ).sum() / forecast_fact_merged.loc[x.index, 'Volume'].sum()
+        ).droplevel(0, axis = 1)
 
         ############################# ПОДСЧЕТ ТЕКУЩЕГО МЕСЯЦА #####################################################
         # Если текущий месяц январь
         if today.month == 1:
-            if today.day > 14:
-                print('Реализуем обновление в середине месяца')
-                if today.day < 21:
-                    fact_w = 0.5
-                    prognoz_w = 0.5
-                else:
-                    fact_w = 0.7
-                    prognoz_w = 0.3     
 
-                # Загрузка данных вимб и апи
-                adv_tec = pd.read_excel(filepath_vimb_curr_month,
-                                    skiprows = 19,
-                                    usecols = [0, 5, 6, 7, 12, 13])
-                adv_tec = KUS_Forecast.parse_VIMB(adv_tec)
-                tvr_prog_tec = data_api
-                tec_main = pd.merge(tvr_prog_tec, adv_tec, how = "right", on = ['Channel', 'BCA', "Month"])
+            if today.day > 14:
+                print(Color.BOLD + 'Реализуем обновление в середине месяца' + Color.END)
+
+                if today.day < 21:
+                    fact_weight = 0.5        # вес фактического куска
+                    forecast_weight = 0.5    # вес прогнозного куска
+
+                else:
+                    fact_weight = 0.7        # вес фактического куска
+                    forecast_weight = 0.3    # вес прогнозного куска
+
+                # Загрузка данных VIMB и БД Mediascope 
+                tvr_df = pd.read_excel(
+                    filepath_vimb_curr_month,
+                    skiprows = 19,
+                    usecols = [0, 5, 6, 7, 12, 13]
+                )
+                tvr_df = KUSForecast.parse_VIMB(tvr_df)
+
+                # Соединение фактических кусков текущего месяца по рекламному рейтингу tvr из VIMB и эфирному рейтингу TVR из БД Mediascope 
+                full_data = pd.merge(data_api, tvr_df, how = "right", on = ['Channel', 'BCA', "Month"])
 
                 # Подсчет факта
-                tec_main['kus_f'] = tec_main['tvr_adv'] / tec_main['TVR']
-                results_prognoz = pd.merge(df_prognoz, tec_main[['kus_f','Channel']], how = "left", on = ['Channel'])
-                results_prognoz['tec_m_progn'] = results_prognoz.iloc[:,1]
+                full_data['kus_f'] = full_data['tvr_adv'] / full_data['TVR'] # создание столбца с фактическим расчетным КУС
 
-                results_prognoz.iloc[:, 1] = results_prognoz['kus_f'] * fact_w + (results_prognoz.iloc[:, 1]) * prognoz_w
+                # JOIN факта текущего месяца с прогнозом на дальние месяцы
+                result_df = pd.merge(forecast_df, full_data[['kus_f','Channel']], how = "left", on = ['Channel'])
+                result_df['tec_m_progn'] = result_df.iloc[:,1]
 
-                df_result_all = df_zakrytye.merge(results_prognoz,on = 'Channel', how = 'left')
+                # Корректировка прогноза на текущий месяц через веса
+                result_df.iloc[:, 1] = result_df['kus_f'] * fact_weight + (result_df.iloc[:, 1]) * forecast_weight
+                final_result = normalized_grp.merge(result_df,on = 'Channel', how = 'left')
 
             else:
                 print('Закрытие месяца!')
-                df_result_all = df_zakrytye.merge(df_prognoz, on = 'Channel', how = 'left')
+                final_result = normalized_grp.merge(forecast_df, on = 'Channel', how = 'left')
 
         # Если текущий месяц не январь
         else:
             if today.day > 10:
                 print('Реализуем обновление в середине месяца')
                 if today.day < 21:
-                    fact_w = 0.5
-                    prognoz_w = 0.5
+                    fact_weight = 0.5
+                    forecast_weight = 0.5
                 else:
-                    fact_w = 0.7
-                    prognoz_w = 0.3     
+                    fact_weight = 0.7
+                    forecast_weight = 0.3     
 
-                    #Загрузка данных вимб и апи
-                adv_tec = pd.read_excel(filepath_vimb_curr_month,
-                                    skiprows = 19,
-                                    usecols = [0, 5, 6, 7, 12, 13])
-                adv_tec = KUS_Forecast.parse_VIMB(adv_tec)
-                tvr_prog_tec = data_api
-                print(adv_tec)
-                print(adv_tec.dtypes)
-                tec_main = pd.merge(tvr_prog_tec, adv_tec, how = "right", on = ['Channel', 'BCA', "Month"])
+                # Загрузка данных VIMB и БД Mediascope 
+                tvr_df = pd.read_excel(
+                    filepath_vimb_curr_month,
+                    skiprows = 19,
+                    usecols = [0, 5, 6, 7, 12, 13]
+                )
+                tvr_df = KUSForecast.parse_VIMB(tvr_df)
 
-                        #Подсчет факта
-                tec_main['kus_f'] = tec_main['tvr_adv'] / tec_main['TVR']
-                results_prognoz = pd.merge(df_prognoz, tec_main[['kus_f','Channel']], how = "left", on = ['Channel'])
-                results_prognoz['tec_m_progn'] = results_prognoz.iloc[:,1]
+                # Соединение фактических кусков текущего месяца по рекламному рейтингу tvr из VIMB и эфирному рейтингу TVR из БД Mediascope 
+                full_data = pd.merge(data_api, tvr_df, how = "right", on = ['Channel', 'BCA', "Month"])
 
-                results_prognoz.iloc[:, 1] = results_prognoz['kus_f'] * fact_w + (results_prognoz.iloc[:, 1]) * prognoz_w
+                # Подсчет факта
+                full_data['kus_f'] = full_data['tvr_adv'] / full_data['TVR']  # создание столбца с фактическим расчетным КУС
 
-                df_result_all = df_zakrytye.merge(results_prognoz,on = 'Channel', how = 'left')
+                # JOIN факта текущего месяца с прогнозом на дальние месяцы
+                result_df = pd.merge(forecast_df, full_data[['kus_f','Channel']], how = "left", on = ['Channel'])
+                result_df['tec_m_progn'] = result_df.iloc[:,1]
+
+                # Корректировка прогноза на текущий месяц через веса
+                result_df.iloc[:, 1] = result_df['kus_f'] * fact_weight + (result_df.iloc[:, 1]) * forecast_weight
+                final_result = normalized_grp.merge(result_df,on = 'Channel', how = 'left')
 
             else:
                 print('Закрытие месяца!')
-                df_result_all = df_zakrytye.merge(df_prognoz, on = 'Channel', how = 'left')
+                final_result = normalized_grp.merge(forecast_df, on = 'Channel', how = 'left')
 
-        return df_result_all
+        return final_result
+    
+
+    def make_kus_forecast(
+            self, 
+            current_df_api: pd.DataFrame, 
+            year: int, 
+            vimb_tvr_filepath: str,
+            TVR_filepath: str,
+            vimb_curr_month_file: str,
+            output_filepath: str
+        ):
+        """
+            Метод для прогнозирования КУСа 
+        """
+        output_file = f'{output_filepath}КУС предсказание регионы {year}.xlsx'
+
+        # ШАГ 1. Чтение файлов из ВИМБа с рейкламным рейтингом tvr.
+        vimb_tvr = self.from_file(vimb_tvr_filepath, 18, [0, 2, 7, 8, 9, 14, 15])
+        vimb_tvr = self.parse_VIMB(vimb_tvr, False)
+
+        # Создаем копию. Далее работаем с ней
+        tvr_df_copy = vimb_tvr.copy()
+
+        # ШАГ 2. Чтение файлов с эфирным рейтингом TVR по закрытым месяцам.
+        TVR = self.from_file(TVR_filepath, col_list = [1, 2, 3, 4, 5, 6], is_vimb = False)
+        # Создаем копию. Далее работаем с ней
+        TVR_df_copy = TVR.copy()
+
+        # ШАГ 3. Создание фулл таблицы, используя рекламные рейтинги и эфирные
+        self.ratings_table = pd.merge(TVR_df_copy, tvr_df_copy, how = 'right', on = ['Channel', 'BCA', 'Month', 'time'])
+
+        # ШАГ 4. Прогнозирование
+        kus_forecast = self.fit_predict(
+                            current_df_api, 
+                            pd.to_datetime(f'{year}-01-01'),                             
+                            pd.to_datetime(f'{year}-12-31'),
+                            vimb_curr_month_file
+                        )
+        
+        # ШАГ 5. Сохранение в файл .xlsx прогноз КУС
+        kus_forecast.to_excel(output_file)
+        return kus_forecast
+        
+
+    def kus_pipeline(
+            self, 
+            current_year: int, 
+            today_day: int, 
+            today_month: int,
+            periods: dict,
+            json_tasks_fact_month: dict,
+            json_tasks_full_month: dict,
+            columns_order_file_path: str,
+            historical_path: str,
+            vimb_tvr_filepath: str,
+            TVR_filepath: str,
+            vimb_curr_month_file: str,
+            output_filepath: str
+
+        ):
+        """
+            Метод для выгрузки данных из БД Mediascope по условиям.
+
+            Параметры:
+            ----------
+                current_year: int
+                    Номер года
+                today_day: int
+                    Номер сегодняшнего дня в текущем месяце.
+                today_month: int
+                    Номер текущего месяца.
+                periods: dict
+                    Словарь с периодами для выгрузки данных из БД Mediascope.
+                json_tasks_fact_month: dict
+                    Словарь с задачами в формате JSON для выгрузки факта текущего месяца.
+                json_tasks_full_month: dict
+                    Словарь с задачами в формате JSON для выгрузки прошлого месяца.
+                columns_order_file_path: str
+                    Путь к файлу с прогнозируемыми регионами
+                historical_path: str
+                    Путь к папке с историческими данными TVR ('эфирный рейтинг')
+                vimb_tvr_filepath: str
+                    Путь к папке с выгрузками рекламного рейтинга tvr из ВИМБ по закрытым периодам.
+                TVR_filepath: str
+                    Путь к папке с выгрузками эфирного рейтинга TVR по закрытым месяцам из БД Mediascope.
+                vimb_curr_month_file: str
+                    Путь к файлу свыгрузкой рекламного рейтинга tvr из ВИМБ по ТЕКУЩЕГО МЕСЯЦУ.
+                output_filepath: str
+                    Название выходного файла с прогнозом.
+        """
+        forecast_df = pd.DataFrame()
+
+        from datetime import date
+        today = date.today()
+
+        # Если текущий месяц Январь
+        if today_month == 1:
+            print(Color.BOLD + Color.SEA_GREEN + f"Текущий месяц ЯНВАРЬ {current_year} года." + Color.END)
+
+            # Необходимо закрывать предыдущий год и сделать обновление в середине текущего месяца
+            if today_day > 1 and today_day <= 16:
+                print(Color.BOLD + "Сегодня предыдущий месяц закрываем! Пожалуйста, подождите ..." + Color.END)
+                print(
+                    Color.BOLD + \
+                    "Делаю выгрузку всего прошлого месяца в разбивке по слотам, а также выгрузку всего прошлого месяца без разбивки" +\
+                    Color.END
+                )
+
+
+                import time
+                start = time.perf_counter()
+
+                kus_calc = KUSCalculation(periods['full_month'])
+                result_df = kus_calc.make_output_table(
+                    json_tasks_fact_month, 
+                    columns_order_file_path,
+                    historical_path,
+                    json_tasks_full_month,
+                    close_month = True
+                )
+
+                end = time.perf_counter()
+                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END + '\n')
+
+                print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
+                forecast_df = self.make_kus_forecast(
+                    current_df_api = result_df, 
+                    year = current_year - 1,
+                    vimb_tvr_filepath = vimb_tvr_filepath,
+                    TVR_filepath = TVR_filepath,
+                    vimb_curr_month_file = vimb_curr_month_file,
+                    output_filepath = output_filepath
+                )
+            
+            # Обновление в середине января
+            else:
+                print(Color.BOLD + "Обновление в середине месяца. Выгружаю фактическую часть Января. Пожалуйста, подождите ..." + Color.END)
+
+                import time
+                start = time.perf_counter()
+
+                kus_calc = KUSCalculation(periods['fact_month'])
+                result_df = kus_calc.make_output_table(
+                    json_tasks_fact_month, 
+                    columns_order_file_path,
+                    historical_path,
+                    json_tasks_full_month
+                )
+
+                end = time.perf_counter()
+                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END)
+
+                print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
+                forecast_df = self.make_kus_forecast(
+                    current_df_api = result_df, 
+                    year = current_year,
+                    vimb_tvr_filepath = vimb_tvr_filepath,
+                    TVR_filepath = TVR_filepath,
+                    vimb_curr_month_file = vimb_curr_month_file,
+                    output_filepath = output_filepath
+                )
+        
+        # Текущий месяц не Январь
+        else:
+            # Закрытие месяца
+            if today.day > 1 and today.day <= 10:
+                #today_month = f"{MONTHS_RU[today.month - 1]}"
+                print(
+                    Color.BOLD + Color.SEA_GREEN + \
+                    f"Закрываю предыдущий месяц {{MONTHS_RU[today.month - 1]}}. " + \
+                    "Делаю выгрузку всего прошлого месяца в разбивке по слотам, а также выгрузку всего прошлого месяца без разбивки. " + \
+                    "Пожалуйста, подождите ..." + Color.END
+                )
+
+                import time
+                start = time.perf_counter()
+
+                kus_calc = KUSCalculation(periods['full_month'])
+                result_df = kus_calc.make_output_table(
+                    json_tasks_fact_month, 
+                    columns_order_file_path,
+                    historical_path,
+                    json_tasks_full_month,
+                    close_month = True
+                )
+
+                end = time.perf_counter()
+                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END)
+
+                print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
+                forecast_df = self.make_kus_forecast(
+                    current_df_api = result_df, 
+                    year = current_year,
+                    vimb_tvr_filepath = vimb_tvr_filepath,
+                    TVR_filepath = TVR_filepath,
+                    vimb_curr_month_file = vimb_curr_month_file,
+                    output_filepath = output_filepath
+                )
+            
+
+            # Обновление в середине месяца
+            else:
+                today_month = f"{MONTHS_RU[today.month]}"
+                print(
+                    Color.BOLD + Color.SEA_GREEN + \
+                    "Делаю обновление в середине месяца {MONTHS_RU[today.month]}. Выгружаю фактическую часть текущего месяца. " + \
+                    "Пожалуйста, подождите ..." + Color.END
+                )
+
+                import time
+                start = time.perf_counter()
+
+                kus_calc = KUSCalculation(periods['fact_month'])
+                result_df = kus_calc.make_output_table(
+                    json_tasks_fact_month, 
+                    columns_order_file_path,
+                    historical_path,
+                    json_tasks_full_month
+                )
+
+                end = time.perf_counter()
+                print('\n' + Color.BOLD + f'ВРЕМЯ РАСЧЕТА КОДА СОСТАВИЛО: {((end - start) / 60):0.2f} мин.' + Color.END)
+
+                forecast_df = self.make_kus_forecast(
+                    current_df_api = result_df, 
+                    year = current_year,
+                    vimb_tvr_filepath = vimb_tvr_filepath,
+                    TVR_filepath = TVR_filepath,
+                    vimb_curr_month_file = vimb_curr_month_file,
+                    output_filepath = output_filepath
+                )
+
+        return forecast_df
