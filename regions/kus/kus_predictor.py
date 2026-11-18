@@ -224,8 +224,6 @@ class KUSCalculation:
             ----------
                 api_results: list
         """
-        api_result_df = []
-
         # Закрытие месяца
         if close_month == True:
 
@@ -375,6 +373,9 @@ class KUSForecast:
                 result: pd.DataFrame
                     Таблица с результатом
         """
+        if col_list == []:
+            col_list = None
+        
         files = []
         files += os.listdir(path)
 
@@ -447,6 +448,8 @@ class KUSForecast:
             data_api: pd.DataFrame, 
             first_date: str, 
             last_date: str, 
+            current_day: int,
+            current_month: int,
             filepath_vimb_curr_month: str
         ) -> pd.DataFrame:
         """
@@ -460,6 +463,10 @@ class KUSForecast:
                     Дата начала вывода данных в формате строки.
                 last_date: str
                     Дата окончания вывода данных в формате строки.
+                current_day: int
+                    Номер дня в текущем месяце
+                current_month: int
+                    Номер текущего месяца
                 filepath_vimb_curr_month: str 
                     Путь к файлу с выгрузкой из VIMB по текущему месяцу.
 
@@ -473,10 +480,8 @@ class KUSForecast:
         today = date.today()
 
         # дата начала и окончания исторических данных для предсказания куса (база прогноза)
-        first_fact_date = today - pd.offsets.MonthBegin()- DateOffset(months = 6) # 1е число пол года назад
+        first_fact_date = today - pd.offsets.MonthBegin() - DateOffset(months = 6) # 1е число пол года назад
         last_fact_date = today - pd.offsets.MonthBegin()   
-
-        #table = self.table
 
         ################################### ОБЩАЯ ПОДГОТОВКА #############################################################
         self.ratings_table['Month'] = self.ratings_table['Month'].apply(KUSForecast.sdate)
@@ -551,12 +556,12 @@ class KUSForecast:
 
         ############################# ПОДСЧЕТ ТЕКУЩЕГО МЕСЯЦА #####################################################
         # Если текущий месяц январь
-        if today.month == 1:
+        if current_month == 1:
 
-            if today.day > 14:
+            if current_day > 14:
                 print(Color.BOLD + 'Реализуем обновление в середине месяца' + Color.END)
 
-                if today.day < 21:
+                if current_day < 21:
                     fact_weight = 0.5        # вес фактического куска
                     forecast_weight = 0.5    # вес прогнозного куска
 
@@ -570,7 +575,7 @@ class KUSForecast:
                     skiprows = 19,
                     usecols = [0, 5, 6, 7, 12, 13]
                 )
-                tvr_df = KUSForecast.parse_VIMB(tvr_df)
+                tvr_df = self.parse_VIMB(tvr_df)
 
                 # Соединение фактических кусков текущего месяца по рекламному рейтингу tvr из VIMB и эфирному рейтингу TVR из БД Mediascope 
                 full_data = pd.merge(data_api, tvr_df, how = "right", on = ['Channel', 'BCA', "Month"])
@@ -588,13 +593,14 @@ class KUSForecast:
 
             else:
                 print('Закрытие месяца!')
-                final_result = normalized_grp.merge(forecast_df, on = 'Channel', how = 'left')
+                final_res = normalized_grp.merge(forecast_df, on = 'Channel', how = 'left')
+                final_result = final_res.reset_index()
 
         # Если текущий месяц не январь
         else:
-            if today.day > 10:
+            if current_day > 10:
                 print('Реализуем обновление в середине месяца')
-                if today.day < 21:
+                if current_day < 21:
                     fact_weight = 0.5
                     forecast_weight = 0.5
                 else:
@@ -607,7 +613,7 @@ class KUSForecast:
                     skiprows = 19,
                     usecols = [0, 5, 6, 7, 12, 13]
                 )
-                tvr_df = KUSForecast.parse_VIMB(tvr_df)
+                tvr_df = self.parse_VIMB(tvr_df)
 
                 # Соединение фактических кусков текущего месяца по рекламному рейтингу tvr из VIMB и эфирному рейтингу TVR из БД Mediascope 
                 full_data = pd.merge(data_api, tvr_df, how = "right", on = ['Channel', 'BCA', "Month"])
@@ -625,15 +631,20 @@ class KUSForecast:
 
             else:
                 print('Закрытие месяца!')
-                final_result = normalized_grp.merge(forecast_df, on = 'Channel', how = 'left')
+                final_res = normalized_grp.merge(forecast_df, on = 'Channel', how = 'left')
+                final_result = final_res.reset_index()
+        
+        final_result_sorted = final_result.sort_values('Channel').reset_index(drop = True)
 
-        return final_result
+        return final_result_sorted
     
 
     def make_kus_forecast(
             self, 
             current_df_api: pd.DataFrame, 
             year: int, 
+            current_day: int,
+            current_month: int,
             vimb_tvr_filepath: str,
             TVR_filepath: str,
             vimb_curr_month_file: str,
@@ -652,7 +663,7 @@ class KUSForecast:
         tvr_df_copy = vimb_tvr.copy()
 
         # ШАГ 2. Чтение файлов с эфирным рейтингом TVR по закрытым месяцам.
-        TVR = self.from_file(TVR_filepath, col_list = [1, 2, 3, 4, 5, 6], is_vimb = False)
+        TVR = self.from_file(TVR_filepath, col_list = [], is_vimb = False)
         # Создаем копию. Далее работаем с ней
         TVR_df_copy = TVR.copy()
 
@@ -664,12 +675,162 @@ class KUSForecast:
                             current_df_api, 
                             pd.to_datetime(f'{year}-01-01'),                             
                             pd.to_datetime(f'{year}-12-31'),
+                            current_day,
+                            current_month,
                             vimb_curr_month_file
                         )
         
         # ШАГ 5. Сохранение в файл .xlsx прогноз КУС
-        kus_forecast.to_excel(output_file)
+        #kus_forecast.to_excel(output_file)
+
+        try:
+            with pd.ExcelWriter(output_file, engine = 'xlsxwriter') as writer:
+                self.make_style_kus_table(
+                    writer = writer,
+                    df = kus_forecast,
+                    sheet_name = 'Sheet1'
+                )
+
+        except Exception as e:
+            print(f"❌ Не удалось сохранить файл {output_file}: {e}")
+            raise
+
+        else:
+            print('\n' + f'✅ Файл сохранён: {output_file}.')
+
         return kus_forecast
+    
+
+    def make_style_kus_table(
+        self,
+        writer: pd.ExcelWriter,
+        df: pd.DataFrame,
+        sheet_name: str = 'Channels',
+        use_filters: bool = True,
+        freeze_panes: bool = True,
+        write_index: bool = True,
+        index_header: str = 'index',
+        index_width: float = 8.0,
+        month_columns: list | None = None,
+        ):
+        """
+        Форматирование таблицы каналов:
+            index | Channel | 12 месяцев | kus_f | tec_m_progn
+
+        - Колонки месяцев (по умолчанию — все, что между Channel и kus_f)
+        принудительно приводятся к datetime и форматируются как даты.
+        - Колонка индекса пишется отдельно с целочисленным форматом '0'
+        (или текстовым, если индекс не числовой).
+
+        Параметры:
+        ----------
+            writer: pd.ExcelWriter
+                уже открытый pd.ExcelWriter(engine='xlsxwriter').
+            df: pd.DataFrame
+                Датафрейм с колонками:
+                    ['Channel', '2026-01-01 00:00:00', ..., '2026-12-01 00:00:00',
+                    'kus_f', 'tec_m_progn'].
+                Индекс записывается отдельной колонкой (по умолчанию).
+            sheet_name: str
+                Название листа.
+            use_filters: bool
+                Включить автофильтр по шапке.
+            freeze_panes: bool
+                Закрепить шапку и первый столбец.
+            write_index: bool
+                Писать ли колонку индекса. По умолчанию True.
+            index_header: str
+                Заголовок колонки индекса.
+            index_width: float
+                Ширина колонки индекса.
+        """
+        workbook = writer.book
+        worksheet = workbook.add_worksheet(sheet_name)
+        writer.sheets[sheet_name] = worksheet
+
+        # --- Форматы ---
+        header_format = workbook.add_format({
+            'bold': True, 'text_wrap': True,
+            'align': 'center', 'valign': 'vcenter',
+            'bg_color': '#D9E1F2'
+        })
+        text_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
+        number_fmt = workbook.add_format({
+            'align': 'center', 'valign': 'vcenter', 'num_format': '0.00000'
+        })
+        int_fmt = workbook.add_format({
+            'align': 'center', 'valign': 'vcenter', 'num_format': '0'
+        })
+
+        # --- Колонки месяцев: всё, что не Channel / kus_f / tec_m_progn ---
+        if month_columns is None:
+            month_columns = [c for c in df.columns
+                            if c not in ('Channel', 'kus_f', 'tec_m_progn')]
+
+        # --- Конфигурация колонок ---
+        column_configs = []
+        for col in df.columns:
+            if col == 'Channel':
+                column_configs.append({'header': col, 'width': 24.0, 'format': 'text'})
+            elif col in month_columns:
+                # значения — числа (КУС), заголовок — дата (строка)
+                column_configs.append({'header': col, 'width': 14.0, 'format': 'number'})
+            elif col in ('kus_f', 'tec_m_progn'):
+                column_configs.append({'header': col, 'width': 14.0, 'format': 'number'})
+            else:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    column_configs.append({'header': col, 'width': 12.0, 'format': 'number'})
+                else:
+                    column_configs.append({'header': col, 'width': 12.0, 'format': 'text'})
+
+        format_map = {'text': text_fmt, 'number': number_fmt, None: None}
+        col_offset = 1 if write_index else 0
+
+        # --- Заголовки ---
+        if write_index:
+            worksheet.write(0, 0, index_header, header_format)
+
+        for col_num, cfg in enumerate(column_configs):
+            header_value = cfg['header']
+            # Заголовок месяца -> 'YYYY-MM-DD' как строка (или оставить как есть)
+            if cfg['header'] in month_columns:
+                try:
+                    header_value = pd.to_datetime(header_value).strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+            worksheet.write(0, col_num + col_offset, header_value, header_format)
+
+        # --- Формат для колонки индекса ---
+        if pd.api.types.is_integer_dtype(df.index.dtype):
+            index_fmt = int_fmt
+        elif pd.api.types.is_numeric_dtype(df.index.dtype):
+            index_fmt = number_fmt
+        else:
+            index_fmt = text_fmt
+
+        # --- Данные ---
+        for row_idx in range(len(df)):
+            if write_index:
+                worksheet.write(row_idx + 1, 0, df.index[row_idx], index_fmt)
+            for col_idx, cfg in enumerate(column_configs):
+                value = df.iat[row_idx, col_idx]
+                # value — число (КУС). Пишем как есть с числовым форматом.
+                worksheet.write(row_idx + 1, col_idx + col_offset,
+                                value, format_map[cfg['format']])
+
+        # --- Ширина колонок ---
+        if write_index:
+            worksheet.set_column(0, 0, index_width)
+        for col_idx, cfg in enumerate(column_configs):
+            worksheet.set_column(col_idx + col_offset, col_idx + col_offset, cfg['width'])
+
+        # --- Автофильтр ---
+        if use_filters and len(df) > 0:
+            worksheet.autofilter(0, 0, len(df), len(column_configs) + col_offset - 1)
+
+        # --- Закрепление шапки и первых двух столбцов ---
+        if freeze_panes:
+            worksheet.freeze_panes(1, 2)
         
 
     def kus_pipeline(
@@ -719,8 +880,7 @@ class KUSForecast:
                     Название выходного файла с прогнозом.
         """
         forecast_df = pd.DataFrame()
-
-        from datetime import date
+        
         today = date.today()
 
         # Если текущий месяц Январь
@@ -745,10 +905,12 @@ class KUSForecast:
                     close_month = True
                 )
 
-                print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
+                print(Color.BOLD + Color.VIOLET + '\n' + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
                     current_df_api = result_df, 
                     year = current_year - 1,
+                    current_day = today_day, 
+                    current_month = today_month,
                     vimb_tvr_filepath = vimb_tvr_filepath,
                     TVR_filepath = TVR_filepath,
                     vimb_curr_month_file = vimb_curr_month_file,
@@ -767,10 +929,12 @@ class KUSForecast:
                     json_tasks_full_month
                 )
 
-                print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
+                print(Color.BOLD + Color.VIOLET + '\n' + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
                     current_df_api = result_df, 
                     year = current_year,
+                    current_day = today_day, 
+                    current_month = today_month,
                     vimb_tvr_filepath = vimb_tvr_filepath,
                     TVR_filepath = TVR_filepath,
                     vimb_curr_month_file = vimb_curr_month_file,
@@ -780,11 +944,10 @@ class KUSForecast:
         # Текущий месяц не Январь
         else:
             # Закрытие месяца
-            if today.day > 1 and today.day <= 10:
-                #today_month = f"{MONTHS_RU[today.month - 1]}"
+            if today_day > 1 and today_day <= 10:
                 print(
                     Color.BOLD + Color.SEA_GREEN + \
-                    f"Закрываю предыдущий месяц {{MONTHS_RU[today.month - 1]}}. " + \
+                    f"Закрываю предыдущий месяц {MONTHS_RU[today.month - 1]}. " + \
                     "Делаю выгрузку всего прошлого месяца в разбивке по слотам, а также выгрузку всего прошлого месяца без разбивки. " + \
                     "Пожалуйста, подождите ..." + Color.END
                 )
@@ -798,10 +961,12 @@ class KUSForecast:
                     close_month = True
                 )
 
-                print(Color.BOLD + Color.ORANGE + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
+                print(Color.BOLD + Color.VIOLET + '\n' + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
                     current_df_api = result_df, 
                     year = current_year,
+                    current_day = today_day, 
+                    current_month = today_month,
                     vimb_tvr_filepath = vimb_tvr_filepath,
                     TVR_filepath = TVR_filepath,
                     vimb_curr_month_file = vimb_curr_month_file,
@@ -825,10 +990,13 @@ class KUSForecast:
                     historical_path,
                     json_tasks_full_month
                 )
-
+                
+                print(Color.BOLD + Color.VIOLET + '\n' + 'Строю прогноз. Пожалуйста, подождите ...' + Color.END)
                 forecast_df = self.make_kus_forecast(
                     current_df_api = result_df, 
                     year = current_year,
+                    current_day = today_day, 
+                    current_month = today_month,
                     vimb_tvr_filepath = vimb_tvr_filepath,
                     TVR_filepath = TVR_filepath,
                     vimb_curr_month_file = vimb_curr_month_file,
